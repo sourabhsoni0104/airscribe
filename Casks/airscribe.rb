@@ -38,10 +38,12 @@ cask "airscribe" do
     Its speech model (about 713 MB) downloads on first launch. Until that
     finishes, dictation falls back to Apple's built-in recognition.
 
-    This build is not notarized. If you did not install with --no-quarantine,
-    run:
+    This build is not notarized, and Homebrew quarantines what it downloads, so
+    macOS will refuse to launch AirScribe until you run:
 
       xattr -dr com.apple.quarantine "#{appdir}/AirScribe.app"
+
+    Without that the app appears to do nothing at all when opened.
 
     A saved cloud API key, if you ever set one, lives in the Keychain and is not
     removed by `brew uninstall --zap`. Delete it from inside the app first, under

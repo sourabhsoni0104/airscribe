@@ -35,10 +35,11 @@ Apple Intelligence is optional. If you have it turned on, AirScribe can use it f
 
 ```sh
 brew tap sourabhsoni0104/airscribe https://github.com/sourabhsoni0104/airscribe
-brew install --cask --no-quarantine sourabhsoni0104/airscribe/airscribe
+brew install --cask sourabhsoni0104/airscribe/airscribe
+xattr -dr com.apple.quarantine /Applications/AirScribe.app
 ```
 
-`--no-quarantine` is what keeps macOS from blocking an unsigned app, so don't leave it off. Later:
+That third line is not optional while builds are unsigned. Homebrew marks the download as quarantined, and macOS then refuses to launch it, silently. Later:
 
 ```sh
 brew upgrade --cask airscribe
@@ -59,14 +60,13 @@ The app is about 43 MB. It contains no speech models; those get downloaded later
 
 macOS will say it cannot verify the app is free of malware. Pick whichever of these suits you:
 
-1. Install with Homebrew and `--no-quarantine`, as above. Nothing else to do.
-2. Clear the quarantine flag yourself, then open the app normally:
+1. Clear the quarantine flag, then open the app normally. This is the one-liner from the Homebrew instructions above, and it works for the disk image too:
 
    ```sh
    xattr -dr com.apple.quarantine /Applications/AirScribe.app
    ```
 
-3. Try to open it, let macOS refuse, then go to System Settings, Privacy & Security, scroll down to the message about AirScribe, and click Open Anyway. Right-clicking and choosing Open stopped working for this in macOS 15, so don't bother with that.
+2. Try to open it, let macOS refuse, then go to System Settings, Privacy & Security, scroll down to the message about AirScribe, and click Open Anyway. Right-clicking and choosing Open stopped working for this in macOS 15, so don't bother with that.
 
 One thing to know before you settle on an unsigned build: macOS ties Accessibility permission to an app's signing identity, and AirScribe needs Accessibility for its hotkey and for typing into other apps. Without a stable identity that permission can be dropped when the app updates, and you would grant it again in System Settings. Nothing breaks for good, but signed builds don't have this problem.
 
