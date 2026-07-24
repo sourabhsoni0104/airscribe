@@ -118,7 +118,8 @@ private struct MeetingView: View {
                     Task {
                         await coordinator.start(
                             localeIdentifier: model.localeIdentifier,
-                            preferExtendedLanguages: model.preferExtendedLanguages
+                            preferExtendedLanguages: model.preferExtendedLanguages,
+                            outputLanguageMode: model.outputLanguageMode
                         )
                     }
                 }

@@ -115,6 +115,7 @@ enum AirScribeError: LocalizedError {
     case emptyTranscription
     case audioConfiguration(String)
     case clipboardCopyFailed
+    case insertionNotVerified
 
     var errorDescription: String? {
         switch self {
@@ -134,6 +135,8 @@ enum AirScribeError: LocalizedError {
             "The microphone could not be configured: \(message)"
         case .clipboardCopyFailed:
             "No text box found, and AirScribe could not copy the text."
+        case .insertionNotVerified:
+            "AirScribe could not confirm the text was inserted. Clipboard fallback is off, so your clipboard was left unchanged."
         }
     }
 }

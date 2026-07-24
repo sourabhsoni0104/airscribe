@@ -52,6 +52,9 @@ final class MicrophoneCapture: @unchecked Sendable {
                 commonFormat: targetFormat.commonFormat,
                 interleaved: targetFormat.isInterleaved
             )
+            // AVAudioFile recreates the file, which can drop the owner-only mode
+            // that the store applied when it reserved the path.
+            FilePermissions.restrictToOwner(at: recordingURL)
         }
 
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in

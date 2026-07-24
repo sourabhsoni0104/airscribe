@@ -387,6 +387,19 @@ struct PauseAwarePunctuation {
 }
 
 struct BasicTextEnhancer: Sendable {
+    static let maximumVocabularyTerms = 60
+
+    static func deduplicated(_ terms: [String], limit: Int) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for term in terms where !term.isEmpty {
+            guard seen.insert(term.lowercased()).inserted else { continue }
+            output.append(term)
+            if output.count >= limit { break }
+        }
+        return output
+    }
+
     private static let fillerRules: [(pattern: String, replacement: String)] = [
         (#"\b(?:um+|uh+|erm+|ah+)\b[,.]?\s*"#, ""),
         (#"^\s*(?:you know|like|let['’]s say)[,.]?\s+"#, ""),
@@ -416,14 +429,21 @@ struct BasicTextEnhancer: Sendable {
         }
 
         text = replaceSpokenSymbols(in: text)
-        text = text.replacingOccurrences(of: #"\bu\b"#, with: "you", options: [.regularExpression, .caseInsensitive])
+        // Expand a standalone "u" only when it cannot be an initial or an
+        // abbreviation component. A neighbouring period means "U.S." or "a. u.",
+        // where "you" would corrupt the text.
+        text = text.replacingOccurrences(
+            of: #"(?<![\p{L}\p{N}.])u(?![\p{L}\p{N}.])"#,
+            with: "you",
+            options: [.regularExpression, .caseInsensitive]
+        )
         text = text.replacingOccurrences(of: #"\s+([,.;:!?])"#, with: "$1", options: .regularExpression)
         text = text.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
         text = text.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
 
         for (heard, correction) in learnedCorrections.sorted(by: { $0.key.count > $1.key.count }) {
             guard !heard.isEmpty, !correction.isEmpty else { continue }
-            guard !Self.isCaseOnlyCorrectionThatShouldNotPropagate(heard: heard, correction: correction) else {
+            guard !Self.shouldNotPropagate(heard: heard, correction: correction) else {
                 continue
             }
             let escaped = heard
@@ -437,21 +457,35 @@ struct BasicTextEnhancer: Sendable {
             )
         }
 
-        for term in vocabulary where !term.isEmpty {
-            let escaped = NSRegularExpression.escapedPattern(for: term)
-            text = text.replacingOccurrences(of: "(?i)\\b\(escaped)\\b", with: term, options: .regularExpression)
-            if term.count >= 6, term.allSatisfy(\.isLetter) {
-                for split in 3 ... (term.count - 3) {
-                    let index = term.index(term.startIndex, offsetBy: split)
-                    let spaced = NSRegularExpression.escapedPattern(for: String(term[..<index]))
-                        + #"\s+"#
-                        + NSRegularExpression.escapedPattern(for: String(term[index...]))
-                    text = text.replacingOccurrences(
-                        of: #"(?i)\b"# + spaced + #"\b"#,
-                        with: term,
-                        options: .regularExpression
-                    )
-                }
+        // Each `replacingOccurrences(options: .regularExpression)` compiles a new
+        // expression, and the split-variant loop multiplies that by term length.
+        // Gate every pass behind a cheap literal search so an unrelated
+        // vocabulary list costs one substring scan per term instead of a
+        // compiled regex sweep.
+        for term in Self.deduplicated(vocabulary, limit: Self.maximumVocabularyTerms) {
+            if text.range(of: term, options: .caseInsensitive) != nil {
+                let escaped = NSRegularExpression.escapedPattern(for: term)
+                text = text.replacingOccurrences(
+                    of: "(?i)\\b\(escaped)\\b",
+                    with: term,
+                    options: .regularExpression
+                )
+            }
+            guard term.count >= 6, term.allSatisfy(\.isLetter) else { continue }
+            for split in 3 ... (term.count - 3) {
+                let index = term.index(term.startIndex, offsetBy: split)
+                let head = String(term[..<index])
+                let tail = String(term[index...])
+                guard text.range(of: head, options: .caseInsensitive) != nil,
+                      text.range(of: tail, options: .caseInsensitive) != nil else { continue }
+                let spaced = NSRegularExpression.escapedPattern(for: head)
+                    + #"\s+"#
+                    + NSRegularExpression.escapedPattern(for: tail)
+                text = text.replacingOccurrences(
+                    of: #"(?i)\b"# + spaced + #"\b"#,
+                    with: term,
+                    options: .regularExpression
+                )
             }
         }
 
@@ -461,9 +495,12 @@ struct BasicTextEnhancer: Sendable {
 
         let endsWithEmailSignOff = mode == .email && hasEmailSignOff(text)
         if let last = text.last, !".!?…".contains(last), !endsWithEmailSignOff {
-            text.append(mode == .chat && text.count < 24 ? "!" : "?")
-            if !looksLikeQuestion(text.dropLast()) {
-                text.removeLast()
+            // Question wins over tone: a short chat question takes "?", not "!".
+            if looksLikeQuestion(text[...]) {
+                text.append("?")
+            } else if mode == .chat, text.count < 24 {
+                text.append("!")
+            } else {
                 text.append(".")
             }
         }
@@ -603,20 +640,42 @@ struct BasicTextEnhancer: Sendable {
                 "$2"
             ),
         ]
-        var text = explicitRepairRules.reduce(source) { result, rule in
+        let text = explicitRepairRules.reduce(source) { result, rule in
             result.replacingOccurrences(
                 of: rule.pattern,
                 with: rule.replacement,
                 options: [.regularExpression, .caseInsensitive]
             )
         }
-        text = text.replacingOccurrences(
-            of: #"\b([\p{L}\p{N}'’\-]+)(?:[\s,]+\1){1,}\b"#,
-            with: "$1",
-            options: [.regularExpression, .caseInsensitive]
-        )
-        return text
+        return Self.collapsingStutters(in: text)
     }
+
+    /// English repeats some words legitimately ("had had", "very very good"), so
+    /// a blanket adjacent-duplicate collapse changes meaning. Only collapse
+    /// repeats of words that are not idiomatically doubled.
+    static func collapsingStutters(in source: String) -> String {
+        guard let expression = try? NSRegularExpression(
+            pattern: #"(?i)\b([\p{L}\p{N}'’\-]+)((?:[\s,]+\1\b){1,})"#
+        ) else { return source }
+        let text = source as NSString
+        let matches = expression.matches(
+            in: source,
+            range: NSRange(location: 0, length: text.length)
+        )
+        let output = NSMutableString(string: source)
+        for match in matches.reversed() {
+            let word = text.substring(with: match.range(at: 1))
+            guard !Self.repeatableWords.contains(word.lowercased()) else { continue }
+            output.replaceCharacters(in: match.range, with: word)
+        }
+        return output as String
+    }
+
+    /// Words whose immediate repetition is grammatical or conventional.
+    static let repeatableWords: Set<String> = [
+        "had", "that", "very", "no", "yes", "ha", "hah", "so", "bye", "hey",
+        "well", "really", "many", "long", "far", "again", "more", "less", "good"
+    ]
 
     private func uppercaseFirstLetter(in source: String) -> String {
         guard let index = source.firstIndex(where: { $0.isLetter }) else { return source }
@@ -625,16 +684,22 @@ struct BasicTextEnhancer: Sendable {
         return result
     }
 
-    private static func isCaseOnlyCorrectionThatShouldNotPropagate(
-        heard: String,
-        correction: String
-    ) -> Bool {
+    /// A learned correction is replayed against every later dictation, so a rule
+    /// keyed on an everyday word ("to" → "too") would rewrite unrelated text
+    /// forever. Only distinctive keys — names, jargon, multi-word phrases — are
+    /// safe to propagate.
+    static func shouldNotPropagate(heard: String, correction: String) -> Bool {
+        let normalizedHeard = heard.lowercased()
+        let heardWords = normalizedHeard.split(whereSeparator: \.isWhitespace)
+        if heardWords.count <= 1, CorrectionLearner.commonWords.contains(normalizedHeard) {
+            return true
+        }
+        if heard.count <= 2 { return true }
         guard heard.caseInsensitiveCompare(correction) == .orderedSame,
               heard != correction else {
             return false
         }
-        let normalizedHeard = heard.lowercased()
-        return heard.count <= 2 || CorrectionLearner.commonWords.contains(normalizedHeard)
+        return CorrectionLearner.commonWords.contains(normalizedHeard)
     }
 
     private func punctuateConversationalOpener(in source: String) -> String {
@@ -696,11 +761,22 @@ struct CorrectionLearningResult: Equatable, Sendable {
 }
 
 struct CorrectionLearner: Sendable {
+    /// Everyday words that must never key a learned correction.
+    ///
+    /// A rule is replayed against every later dictation, so one edit of a word
+    /// this common would silently rewrite unrelated text forever. The list
+    /// deliberately includes both sides of the homophone pairs a speaker is most
+    /// likely to correct by hand — there/their, your/you're, its/it's, to/too —
+    /// because those are exactly the edits that must stay local to one dictation.
+    /// Distinctive keys and multi-word phrases are still learned normally.
     static let commonWords: Set<String> = [
-        "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has", "have",
-        "he", "her", "his", "i", "in", "is", "it", "its", "me", "my", "not", "of", "on", "or",
-        "our", "she", "so", "that", "the", "their", "them", "they", "this", "to", "too", "was",
-        "we", "were", "will", "with", "you", "your"
+        "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "for", "from",
+        "has", "had", "have", "he", "her", "here", "hear", "his", "how", "i", "if", "in", "into",
+        "is", "it", "its", "it's", "me", "my", "no", "nor", "not", "of", "on", "once", "one",
+        "ones", "or", "our", "out", "over", "she", "so", "some", "than", "that", "the", "their",
+        "them", "then", "there", "these", "they", "they're", "this", "those", "to", "too", "two",
+        "under", "up", "was", "we", "were", "what", "when", "where", "which", "while", "who",
+        "whose", "who's", "why", "will", "with", "would", "yes", "you", "your", "you're"
     ]
 
     func learn(from original: String, to corrected: String) -> CorrectionLearningResult? {
@@ -742,11 +818,9 @@ struct CorrectionLearner: Sendable {
         if !removed.isEmpty {
             let heard = removed.joined(separator: " ").lowercased()
             let correction = added.joined(separator: " ")
-            let caseOnlyChange = removed.count == 1
-                && added.count == 1
-                && removed[0].caseInsensitiveCompare(correction) == .orderedSame
-                && removed[0] != correction
-            if caseOnlyChange, (heard.count <= 2 || Self.commonWords.contains(heard)) {
+            // Never record a rule that a later dictation would replay across
+            // ordinary words; the same guard gates playback in BasicTextEnhancer.
+            if BasicTextEnhancer.shouldNotPropagate(heard: heard, correction: correction) {
                 return nil
             }
             replacements[heard] = correction

@@ -2,8 +2,6 @@ import Foundation
 import FoundationModels
 
 struct OnDeviceTranslator: Sendable {
-    var isAvailable: Bool { SystemLanguageModel.default.isAvailable }
-
     func translateToEnglish(_ text: String) async throws -> String {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return text }
@@ -21,6 +19,11 @@ struct OnDeviceTranslator: Sendable {
         let response = try await session.respond(to: value)
         let translated = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !translated.isEmpty else { throw TranslationError.emptyResponse }
+        // Names, identifiers, and numbers the speaker said verbatim must survive
+        // translation. Callers keep the original transcript when this throws.
+        guard PolishGuard.isPlausibleTranslation(translated, of: value) else {
+            throw TranslationError.implausibleResult
+        }
         return translated
     }
 
@@ -72,26 +75,6 @@ enum HindiRomanizer {
         return (output as String)
             .replacingOccurrences(of: "॥", with: ".")
             .replacingOccurrences(of: "।", with: ".")
-    }
-
-    static func isSafeCandidate(_ candidate: String, for original: String) -> Bool {
-        guard !candidate.isEmpty,
-              !containsDevanagari(candidate),
-              candidate.count >= max(1, original.count / 3),
-              candidate.count <= max(original.count * 3, original.count + 40) else {
-            return false
-        }
-
-        let originalLatinTerms = original.matches(
-            of: /[A-Za-z][A-Za-z0-9'’._-]*/
-        ).map { String($0.output).lowercased() }
-        let foldedCandidate = candidate.lowercased()
-        guard originalLatinTerms.allSatisfy({ foldedCandidate.contains($0) }) else {
-            return false
-        }
-
-        let originalNumbers = original.matches(of: /\p{N}+/).map { String($0.output) }
-        return originalNumbers.allSatisfy { candidate.contains($0) }
     }
 
     private static func romanizeToken(_ token: String) -> String {
@@ -147,6 +130,7 @@ enum HindiRomanizer {
 enum TranslationError: LocalizedError {
     case unavailable
     case emptyResponse
+    case implausibleResult
 
     var errorDescription: String? {
         switch self {
@@ -154,6 +138,8 @@ enum TranslationError: LocalizedError {
             "On-device English translation is not available on this Mac. The original transcript was kept."
         case .emptyResponse:
             "On-device translation returned no text. The original transcript was kept."
+        case .implausibleResult:
+            "On-device translation dropped names or numbers, so the original transcript was kept."
         }
     }
 }

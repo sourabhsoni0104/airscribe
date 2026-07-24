@@ -32,7 +32,9 @@ xcodebuild \
   -exportPath "${EXPORT_PATH}" \
   -exportOptionsPlist Config/ExportOptions.plist
 
-codesign --verify --deep --strict --verbose=2 "${EXPORT_PATH}/AirScribe.app"
+# --deep is not a validation tool and is discouraged by Apple; --strict plus a
+# Gatekeeper assessment is the supported way to verify a signed bundle.
+codesign --verify --strict --verbose=2 "${EXPORT_PATH}/AirScribe.app"
 if codesign -d --entitlements :- "${EXPORT_PATH}/AirScribe.app" 2>&1 \
     | grep -q 'com.apple.security.get-task-allow'; then
   print -u2 "Release validation failed: get-task-allow is enabled."

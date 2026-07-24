@@ -11,6 +11,19 @@ enum MeetingCaptureState: Equatable {
     case error(String)
 }
 
+enum MeetingCaptureError: LocalizedError {
+    case insufficientStorage(required: Int64, available: Int64)
+
+    var errorDescription: String? {
+        switch self {
+        case let .insufficientStorage(required, available):
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = .file
+            return "A meeting recording needs \(formatter.string(fromByteCount: required)) free; \(formatter.string(fromByteCount: available)) is available."
+        }
+    }
+}
+
 @MainActor
 final class MeetingCoordinator: ObservableObject {
     @Published private(set) var state: MeetingCaptureState = .idle
@@ -39,21 +52,43 @@ final class MeetingCoordinator: ObservableObject {
     private var microphoneURL: URL?
     private var systemURL: URL?
     private var startedAt: Date?
+    private var startedAtInstant: ContinuousClock.Instant?
     private var elapsedTask: Task<Void, Never>?
+    private var autoStopParameters: (localeIdentifier: String, outputLanguageMode: OutputLanguageMode)?
+
+    /// Meetings stop themselves after this long. An unattended recording would
+    /// otherwise grow two audio files plus a spilled transcription buffer without
+    /// any bound.
+    static let maximumRecordingDuration: TimeInterval = 4 * 60 * 60
+
+    /// Headroom required before starting: two 16 kHz mono float streams for the
+    /// maximum duration, rounded up.
+    static let requiredFreeBytes: Int64 = 4_000_000_000
 
     init(speechEngine: ASREngineRouter, permissions: PermissionManager) {
         self.speechEngine = speechEngine
         self.permissions = permissions
     }
 
-    func start(localeIdentifier: String, preferExtendedLanguages: Bool) async {
+    func start(
+        localeIdentifier: String,
+        preferExtendedLanguages: Bool,
+        outputLanguageMode: OutputLanguageMode = .original
+    ) async {
         guard state != .recording, state != .processing else { return }
         guard await permissions.requestMicrophone() else {
             state = .error(AirScribeError.microphonePermissionDenied.localizedDescription)
             return
         }
+        do {
+            try Self.requireFreeSpace(at: store.audioDirectory)
+        } catch {
+            state = .error(error.localizedDescription)
+            return
+        }
 
         resetCaptureState()
+        autoStopParameters = (localeIdentifier, outputLanguageMode)
         do {
             let locale = Locale(identifier: localeIdentifier)
             let microphoneSession = try await speechEngine.makeSession(
@@ -124,6 +159,7 @@ final class MeetingCoordinator: ObservableObject {
             }
 
             startedAt = Date()
+            startedAtInstant = .now
             recovery.mark(
                 .meeting,
                 audioPaths: [microphoneURL.path, self.systemURL?.path].compactMap { $0 }
@@ -188,7 +224,7 @@ final class MeetingCoordinator: ObservableObject {
                     systemText = (try? await translator.translateToEnglish(systemText)) ?? systemText
                 }
             }
-            let duration = max(Date().timeIntervalSince(startedAt ?? Date()), 0)
+            let duration = elapsedDuration()
             microphoneCapture = MeetingTranscriptionResult(
                 text: microphoneText,
                 timings: microphoneCapture.timings,
@@ -312,6 +348,8 @@ final class MeetingCoordinator: ObservableObject {
         // references before startup so a later failure cannot delete it.
         microphoneURL = nil
         systemURL = nil
+        startedAtInstant = nil
+        autoStopParameters = nil
         liveTranscript = ""
         microphonePartial = ""
         systemPartial = ""
@@ -322,15 +360,59 @@ final class MeetingCoordinator: ObservableObject {
         lastWarning = nil
     }
 
+    /// Wall-clock arithmetic drifts across sleep and clock changes, and counting
+    /// one-second sleeps accumulates scheduling error, so elapsed time is derived
+    /// from a monotonic instant instead.
+    private func elapsedDuration() -> TimeInterval {
+        guard let startedAtInstant else { return 0 }
+        let components = startedAtInstant.duration(to: .now).components
+        return max(TimeInterval(components.seconds)
+            + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000, 0)
+    }
+
     private func startElapsedTimer() {
         elapsedTask?.cancel()
         elapsedTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { return }
-                self?.elapsedSeconds += 1
+                guard !Task.isCancelled, let self else { return }
+                let elapsed = self.elapsedDuration()
+                self.elapsedSeconds = Int(elapsed)
+                guard elapsed >= Self.maximumRecordingDuration else { continue }
+                self.lastWarning = "Recording stopped automatically after \(Int(Self.maximumRecordingDuration / 3_600)) hours."
+                self.beginAutoStop()
+                return
             }
         }
+    }
+
+    /// Ends a recording that hit the duration cap, reusing the language settings
+    /// the meeting started with.
+    ///
+    /// `stop` cancels the elapsed-time task, so it must not be awaited from
+    /// inside that task — transcription and summarisation would inherit the
+    /// cancellation and abandon the recording.
+    private func beginAutoStop() {
+        guard let parameters = autoStopParameters else { return }
+        Task { @MainActor [weak self] in
+            await self?.stop(
+                localeIdentifier: parameters.localeIdentifier,
+                outputLanguageMode: parameters.outputLanguageMode
+            )
+        }
+    }
+
+    private static func requireFreeSpace(at url: URL) throws {
+        let probe = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: probe, withIntermediateDirectories: true)
+        guard let available = try? probe.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ).volumeAvailableCapacityForImportantUsage else { return }
+        guard available < requiredFreeBytes else { return }
+        throw MeetingCaptureError.insufficientStorage(
+            required: requiredFreeBytes,
+            available: available
+        )
     }
 
     @discardableResult
@@ -400,6 +482,9 @@ private final class LockedAudioFileWriter: @unchecked Sendable {
             commonFormat: format.commonFormat,
             interleaved: format.isInterleaved
         )
+        // AVAudioFile recreates the file, which can drop the owner-only mode
+        // that the store applied when it reserved the path.
+        FilePermissions.restrictToOwner(at: url)
     }
 
     func write(_ buffer: AVAudioPCMBuffer) {
@@ -413,22 +498,94 @@ private final class LockedAudioFileWriter: @unchecked Sendable {
     }
 }
 
-private struct MeetingSummarizer {
+struct MeetingSummarizer {
+    /// A whole meeting transcript overflows the on-device model's context window,
+    /// which failed silently and fell back to echoing the first few lines. Long
+    /// transcripts are summarised in segments and those summaries are then reduced.
+    static let maximumSegmentCharacters = 6_000
+    static let maximumSegments = 24
+
+    private static let summaryInstructions = """
+        Summarize this meeting transcript locally. Return concise Markdown with sections for Overview, Decisions, and Action items.
+        Do not invent facts, owners, dates, or decisions. Omit a section when the transcript provides none.
+        """
+
+    private static let reduceInstructions = """
+        Merge these partial meeting summaries into one. Return concise Markdown with sections for Overview, Decisions, and Action items.
+        Keep every distinct decision and action item. Do not invent facts, owners, or dates. Omit a section when nothing supports it.
+        """
+
     func summarize(_ transcript: String) async -> String {
         let model = SystemLanguageModel.default
-        if model.isAvailable {
-            let session = LanguageModelSession(
-                model: model,
-                instructions: """
-                Summarize this meeting transcript locally. Return concise Markdown with sections for Overview, Decisions, and Action items.
-                Do not invent facts, owners, dates, or decisions. Omit a section when the transcript provides none.
-                """
-            )
-            if let response = try? await session.respond(to: transcript) {
-                let value = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !value.isEmpty { return value }
-            }
+        guard model.isAvailable else { return Self.outlineFallback(transcript) }
+
+        let segments = Self.segments(of: transcript)
+        var partials: [String] = []
+        for segment in segments {
+            guard let value = await Self.respond(
+                to: segment,
+                instructions: Self.summaryInstructions,
+                model: model
+            ) else { continue }
+            partials.append(value)
         }
+
+        if partials.isEmpty { return Self.outlineFallback(transcript) }
+        if partials.count == 1 { return partials[0] }
+        if let merged = await Self.respond(
+            to: partials.enumerated()
+                .map { "Part \($0.offset + 1):\n\($0.element)" }
+                .joined(separator: "\n\n"),
+            instructions: Self.reduceInstructions,
+            model: model
+        ) {
+            return merged
+        }
+        return partials.joined(separator: "\n\n")
+    }
+
+    private static func respond(
+        to prompt: String,
+        instructions: String,
+        model: SystemLanguageModel
+    ) async -> String? {
+        let session = LanguageModelSession(model: model, instructions: instructions)
+        guard let response = try? await session.respond(to: prompt) else { return nil }
+        let value = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    /// Splits on blank-line speaker turns so a segment never cuts a sentence.
+    static func segments(of transcript: String) -> [String] {
+        guard transcript.count > maximumSegmentCharacters else { return [transcript] }
+        var segments: [String] = []
+        var current = ""
+        for turn in transcript.components(separatedBy: "\n\n") {
+            if !current.isEmpty, current.count + turn.count + 2 > maximumSegmentCharacters {
+                segments.append(current)
+                current = ""
+                if segments.count >= maximumSegments { break }
+            }
+            // A single turn longer than the budget still has to be split.
+            if turn.count > maximumSegmentCharacters {
+                var remainder = Substring(turn)
+                while !remainder.isEmpty, segments.count < maximumSegments {
+                    let end = remainder.index(
+                        remainder.startIndex,
+                        offsetBy: min(maximumSegmentCharacters, remainder.count)
+                    )
+                    segments.append(String(remainder[..<end]))
+                    remainder = remainder[end...]
+                }
+                continue
+            }
+            current += current.isEmpty ? turn : "\n\n" + turn
+        }
+        if !current.isEmpty, segments.count < maximumSegments { segments.append(current) }
+        return segments
+    }
+
+    private static func outlineFallback(_ transcript: String) -> String {
         let lines = transcript
             .split(whereSeparator: \.isNewline)
             .map(String.init)

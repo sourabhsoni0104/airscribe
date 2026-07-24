@@ -24,16 +24,35 @@ final class PermissionManager: ObservableObject {
         if accessibilityGranted != accessibility { accessibilityGranted = accessibility }
     }
 
+    /// Polls the permission state at an interval matched to what the user is
+    /// doing.
+    ///
+    /// A fixed 500 ms poll ran for the process's whole lifetime whenever access
+    /// was never granted, and stopping permanently on the first grant meant a
+    /// later revocation went unnoticed until the app was activated. Polling now
+    /// backs off once the user is unlikely to be at the Settings pane, and keeps
+    /// a slow watchdog running afterwards.
+    static let responsivePollInterval: Duration = .milliseconds(500)
+    static let backedOffPollInterval: Duration = .seconds(3)
+    static let watchdogPollInterval: Duration = .seconds(10)
+    static let responsiveWindow: Duration = .seconds(60)
+
     func startMonitoring() {
         guard monitoringTask == nil else { return }
         monitoringTask = Task { @MainActor [weak self] in
+            let startedAt = ContinuousClock.now
             while !Task.isCancelled {
-                self?.refresh()
-                if self?.accessibilityGranted == true {
-                    self?.monitoringTask = nil
-                    return
+                guard let self else { return }
+                self.refresh()
+                let interval: Duration
+                if self.accessibilityGranted {
+                    interval = Self.watchdogPollInterval
+                } else if startedAt.duration(to: .now) < Self.responsiveWindow {
+                    interval = Self.responsivePollInterval
+                } else {
+                    interval = Self.backedOffPollInterval
                 }
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: interval)
             }
         }
     }

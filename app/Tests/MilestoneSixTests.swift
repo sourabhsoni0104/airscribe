@@ -25,18 +25,18 @@ final class MilestoneSixTests: XCTestCase {
         )
     }
 
-    func testRejectsUnsafeRomanizationCandidates() {
+    func testRejectsTranslationsThatDropNamesOrNumbers() {
         let original = "मैं AirScribe में 25 शब्द बोलता हूँ"
         XCTAssertTrue(
-            HindiRomanizer.isSafeCandidate(
+            PolishGuard.isPlausibleTranslation(
                 "main AirScribe mein 25 shabd bolta hoon",
-                for: original
+                of: original
             )
         )
         XCTAssertFalse(
-            HindiRomanizer.isSafeCandidate(
+            PolishGuard.isPlausibleTranslation(
                 "I use another app for twenty five words",
-                for: original
+                of: original
             )
         )
     }

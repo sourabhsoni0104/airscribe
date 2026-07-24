@@ -6,8 +6,16 @@ struct AssistantInvocation: Equatable, Sendable {
 }
 
 struct AssistantEngine {
+    /// The brand name spoken plainly, with or without a "hey" prefix.
     private static let wakePhrasePattern = try! NSRegularExpression(
-        pattern: #"(?i)^\s*(?:hey[\s,;:!.?—–-]+)?(?:air[\s-]*(?:scribe(?:s)?|scrib|stripe|script)|a[\s-]+scribe|scribe)\b[\s,;:!.?—–-]*(.*)$"#
+        pattern: #"(?i)^\s*(?:hey[\s,;:!.?—–-]+)?air[\s-]*(?:scribe(?:s)?|scrib|stripe|script)\b[\s,;:!.?—–-]*(.*)$"#
+    )
+
+    /// "Scribe" and "a scribe" are ordinary English, so dictating "Scribe the
+    /// meeting notes" must insert text rather than invoke the assistant. Those
+    /// shortened forms only count as the wake word after an explicit "hey".
+    private static let prefixedWakePhrasePattern = try! NSRegularExpression(
+        pattern: #"(?i)^\s*hey[\s,;:!.?—–-]+(?:a[\s-]+)?scribe(?:s)?\b[\s,;:!.?—–-]*(.*)$"#
     )
 
     func invocation(in transcript: String) -> AssistantInvocation? {
@@ -16,6 +24,9 @@ struct AssistantEngine {
         let rawCommand: String
         if let match = Self.wakePhrasePattern.firstMatch(in: cleaned, range: range),
            let commandRange = Range(match.range(at: 1), in: cleaned) {
+            rawCommand = String(cleaned[commandRange])
+        } else if let match = Self.prefixedWakePhrasePattern.firstMatch(in: cleaned, range: range),
+                  let commandRange = Range(match.range(at: 1), in: cleaned) {
             rawCommand = String(cleaned[commandRange])
         } else if let fuzzyCommand = fuzzyWakePhraseCommand(in: cleaned) {
             rawCommand = fuzzyCommand

@@ -4,10 +4,8 @@ DerivedData/
 app/build/
 app/*.xcodeproj/xcuserdata/
 *.xcuserstate
-google-backup-codes-*.txt
-.DS_Store
-app/build/
-app/Config/Release.xcconfig
 *.xcarchive
+app/Config/Release.xcconfig
+google-backup-codes-*.txt
 /readme.md
 /app/README.md

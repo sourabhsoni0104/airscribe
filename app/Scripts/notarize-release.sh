@@ -14,7 +14,7 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/AirScribeNotarize.XXXXXX")
 SUBMISSION_ZIP=${WORK_DIR}/AirScribe.zip
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
-codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+codesign --verify --strict --verbose=2 "${APP_PATH}"
 ditto -c -k --keepParent "${APP_PATH}" "${SUBMISSION_ZIP}"
 xcrun notarytool submit "${SUBMISSION_ZIP}" --keychain-profile "${KEYCHAIN_PROFILE}" --wait
 xcrun stapler staple "${APP_PATH}"

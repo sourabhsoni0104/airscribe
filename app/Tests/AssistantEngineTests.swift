@@ -46,6 +46,18 @@ final class AssistantEngineTests: XCTestCase {
         XCTAssertNil(engine.invocation(in: "How should we approach this?"))
     }
 
+    func testEverydayUseOfScribeIsDictatedNotInvoked() {
+        // "Scribe" and "a scribe" are ordinary English; only "hey" promotes them
+        // to the wake word.
+        XCTAssertNil(engine.invocation(in: "Scribe the meeting notes for me"))
+        XCTAssertNil(engine.invocation(in: "A scribe recorded the proceedings"))
+        XCTAssertNil(engine.invocation(in: "Scribes were common in that period"))
+        XCTAssertEqual(
+            engine.invocation(in: "Hey scribe, make this concise"),
+            AssistantInvocation(command: "make this concise")
+        )
+    }
+
     func testQuestionDetectionKeepsQuestionsAsDictation() {
         XCTAssertTrue(engine.isLikelyQuestion("How should we approach this"))
         XCTAssertTrue(engine.isLikelyQuestion("Could you send the notes?"))

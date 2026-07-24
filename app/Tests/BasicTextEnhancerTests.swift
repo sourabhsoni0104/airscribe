@@ -11,6 +11,75 @@ final class BasicTextEnhancerTests: XCTestCase {
         XCTAssertEqual(output, "Hey, can you help me with writing an email to my boss about vacation?")
     }
 
+    func testKeepsSingleLetterAbbreviationsWhenExpandingYou() {
+        XCTAssertEqual(
+            enhancer.enhance("I moved to the U.S. last year", mode: .general),
+            "I moved to the U.S. last year."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("can u send it", mode: .general),
+            "Can you send it?"
+        )
+    }
+
+    func testShortChatQuestionEndsWithQuestionMark() {
+        XCTAssertEqual(enhancer.enhance("can you help", mode: .chat), "Can you help?")
+        XCTAssertEqual(enhancer.enhance("are we still on", mode: .chat), "Are we still on?")
+    }
+
+    func testShortChatStatementEndsWithExclamation() {
+        XCTAssertEqual(enhancer.enhance("thanks so much", mode: .chat), "Thanks so much!")
+        XCTAssertEqual(enhancer.enhance("see you there", mode: .chat), "See you there!")
+    }
+
+    func testLongChatStatementEndsWithPeriod() {
+        XCTAssertEqual(
+            enhancer.enhance("I will send the finished draft over tomorrow morning", mode: .chat),
+            "I will send the finished draft over tomorrow morning."
+        )
+    }
+
+    func testKeepsLegitimateRepeatedWords() {
+        XCTAssertEqual(
+            enhancer.enhance("she had had enough of it", mode: .general),
+            "She had had enough of it."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("that that file is the wrong one", mode: .general),
+            "That that file is the wrong one."
+        )
+    }
+
+    func testStillCollapsesDictationStutters() {
+        XCTAssertEqual(
+            enhancer.enhance("the the report is ready", mode: .general),
+            "The report is ready."
+        )
+    }
+
+    func testDoesNotApplyLearnedCorrectionsKeyedOnCommonWords() {
+        // A single edit of an everyday word must not rewrite every later dictation.
+        let output = enhancer.enhance(
+            "send it to the team",
+            mode: .general,
+            learnedCorrections: ["to": "too"]
+        )
+        XCTAssertEqual(output, "Send it to the team.")
+    }
+
+    func testDoesNotLearnCorrectionsKeyedOnCommonWords() {
+        XCTAssertNil(correctionLearner.learn(from: "send it to Ana", to: "send it too Ana"))
+        XCTAssertNil(correctionLearner.learn(from: "there is the file", to: "their is the file"))
+    }
+
+    func testStillLearnsDistinctiveCorrections() {
+        let learning = correctionLearner.learn(
+            from: "ask Sarah about the cadence",
+            to: "ask Sarah about the Kadenze"
+        )
+        XCTAssertEqual(learning?.replacements["cadence"], "Kadenze")
+    }
+
     func testDoesNotRemoveMeaningfulLike() {
         let output = enhancer.enhance("I like local software", mode: .general)
         XCTAssertEqual(output, "I like local software.")

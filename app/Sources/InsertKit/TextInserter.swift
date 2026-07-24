@@ -46,11 +46,23 @@ struct TextInserter: Sendable {
 
     @MainActor
     @discardableResult
-    func insert(_ text: String) async throws -> InsertionResult {
+    func insert(
+        _ text: String,
+        allowClipboardFallback: Bool = true
+    ) async throws -> InsertionResult {
         let frontmostApplication = NSWorkspace.shared.frontmostApplication
         let targetsTerminal = Self.isTerminalApplication(
             bundleIdentifier: frontmostApplication?.bundleIdentifier
         )
+
+        /// Copying overwrites whatever the user had on the clipboard, so the
+        /// fallback is skippable: with it off, an unverifiable insertion reports
+        /// a failure and leaves the clipboard alone.
+        func fallbackToClipboard() throws -> InsertionResult {
+            guard allowClipboardFallback else { throw AirScribeError.insertionNotVerified }
+            try copyToClipboard(text)
+            return .copiedToClipboard
+        }
 
         // Clipboard fallback must remain available even when macOS has stale or
         // missing Accessibility authorization. A terminal is different: silently
@@ -61,8 +73,7 @@ struct TextInserter: Sendable {
             if targetsTerminal {
                 throw AirScribeError.accessibilityPermissionDenied
             }
-            try copyToClipboard(text)
-            return .copiedToClipboard
+            return try fallbackToClipboard()
         }
 
         let element = focusedElement()
@@ -77,8 +88,14 @@ struct TextInserter: Sendable {
             return .typed
         }
         guard let element, isEditableTextElement(element) else {
-            try copyToClipboard(text)
-            return .copiedToClipboard
+            return try fallbackToClipboard()
+        }
+        // An element that exposes neither role nor subrole cannot be shown to be
+        // a non-secure field, and synthesising ⌘V into it would type the
+        // transcript somewhere unverifiable. Treat unknown as unsafe, matching
+        // how context capture already fails closed.
+        guard hasReadableRole(element) else {
+            return try fallbackToClipboard()
         }
 
         var processIdentifier: pid_t = 0
@@ -138,16 +155,14 @@ struct TextInserter: Sendable {
                     return .inserted(handle)
                 }
             }
-            try copyToClipboard(text)
-            return .copiedToClipboard
+            return try fallbackToClipboard()
         }
 
         let pasteboard = NSPasteboard.general
         guard let snapshot = snapshotPasteboard(pasteboard) else {
             // Do not materialize or destroy large images, files, and custom
             // application clipboard payloads merely to perform a paste.
-            try copyToClipboard(text)
-            return .copiedToClipboard
+            return try fallbackToClipboard()
         }
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string),
@@ -183,6 +198,13 @@ struct TextInserter: Sendable {
 
         // If insertion cannot be verified, leave the actual transcript on the
         // clipboard and report the safe fallback instead of a false success.
+        // Restore the user's clipboard first when the fallback is disabled.
+        guard allowClipboardFallback else {
+            if pasteboard.changeCount == insertionChangeCount {
+                restorePasteboard(snapshot, to: pasteboard)
+            }
+            throw AirScribeError.insertionNotVerified
+        }
         try copyToClipboard(text)
         return .copiedToClipboard
     }
@@ -200,6 +222,7 @@ struct TextInserter: Sendable {
               AXIsProcessTrusted(),
               let element = focusedElement(),
               !SecureInputGuard.isSecure(element),
+              hasReadableRole(element),
               isEditableTextElement(element),
               let value = stringValue(of: element),
               let selection = selectedRange(of: element),
@@ -316,7 +339,8 @@ struct TextInserter: Sendable {
               let current = focusedElement(),
               CFEqual(element, current),
               !SecureInputGuard.isSecure(element),
-              !SecureInputGuard.isSecure(current) else { return nil }
+              !SecureInputGuard.isSecure(current),
+              hasReadableRole(current) else { return nil }
 
         var currentProcessIdentifier: pid_t = 0
         AXUIElementGetPid(element, &currentProcessIdentifier)
@@ -371,7 +395,8 @@ struct TextInserter: Sendable {
               let element = handle.element,
               let current = focusedElement(),
               CFEqual(element, current),
-              !SecureInputGuard.isSecure(current) else {
+              !SecureInputGuard.isSecure(current),
+              hasReadableRole(current) else {
             return false
         }
         var processIdentifier: pid_t = 0
@@ -580,6 +605,17 @@ struct TextInserter: Sendable {
         let value,
         CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
+    }
+
+    /// True when Accessibility exposes at least one role string for the element.
+    ///
+    /// `SecureInputGuard` can only clear a field it can describe; an element with
+    /// no readable role is indistinguishable from a password field, so callers
+    /// treat this as a refusal rather than as permission.
+    @MainActor
+    func hasReadableRole(_ element: AXUIElement) -> Bool {
+        stringAttribute(kAXRoleAttribute, of: element) != nil
+            || stringAttribute(kAXSubroleAttribute, of: element) != nil
     }
 
     @MainActor

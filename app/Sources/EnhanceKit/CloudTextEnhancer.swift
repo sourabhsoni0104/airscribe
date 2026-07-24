@@ -5,10 +5,40 @@ struct CloudPolishConfiguration: Sendable {
     let endpoint: URL
     let model: String
     let apiKey: String
+    /// Host the user explicitly confirmed as a polish destination, lowercased.
+    /// Required only when the endpoint is not a recognised provider.
+    let acknowledgedHost: String?
+
+    init(endpoint: URL, model: String, apiKey: String, acknowledgedHost: String? = nil) {
+        self.endpoint = endpoint
+        self.model = model
+        self.apiKey = apiKey
+        self.acknowledgedHost = acknowledgedHost?.lowercased()
+    }
 }
 
 actor CloudTextEnhancer {
     private static let maximumResponseBytes = 1_048_576
+
+    /// Hosts whose request and response shape this client is written against.
+    /// Anything else still works, but the user has to acknowledge that their key
+    /// will be sent there — see `CloudPolishConfiguration.acknowledgedHost`.
+    static let knownProviderHosts: Set<String> = [
+        "api.openai.com",
+        "api.anthropic.com",
+        "api.mistral.ai",
+        "api.groq.com",
+        "openrouter.ai",
+        "api.together.xyz",
+        "api.deepseek.com"
+    ]
+
+    static func isKnownProviderHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        if knownProviderHosts.contains(host) { return true }
+        // Accept regional and gateway subdomains of a known provider only.
+        return knownProviderHosts.contains { host.hasSuffix("." + $0) }
+    }
 
     func enhance(
         _ text: String,
@@ -16,10 +46,16 @@ actor CloudTextEnhancer {
         configuration: CloudPolishConfiguration
     ) async throws -> String {
         guard configuration.endpoint.scheme?.lowercased() == "https",
-              configuration.endpoint.host != nil,
+              let host = configuration.endpoint.host,
+              !host.isEmpty,
               configuration.endpoint.user == nil,
               configuration.endpoint.password == nil else {
             throw CloudPolishError.insecureEndpoint
+        }
+        // Sending a bearer token to a mistyped host leaks the key, so an
+        // unrecognised destination has to be confirmed in Settings first.
+        guard Self.isKnownProviderHost(host) || configuration.acknowledgedHost == host.lowercased() else {
+            throw CloudPolishError.unconfirmedEndpointHost(host)
         }
         guard !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CloudPolishError.missingModel
@@ -43,7 +79,7 @@ actor CloudTextEnhancer {
                 """,
                 input: text,
                 store: false,
-                maxOutputTokens: 1_024
+                maxOutputTokens: Self.outputTokenBudget(for: text)
             )
         )
 
@@ -58,26 +94,30 @@ actor CloudTextEnhancer {
         )
         defer { session.invalidateAndCancel() }
 
-        let (bytes, response) = try await session.bytes(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw CloudPolishError.invalidResponse }
         guard (200 ..< 300).contains(http.statusCode) else {
             throw CloudPolishError.requestFailed(status: http.statusCode)
         }
-        if response.expectedContentLength > Self.maximumResponseBytes {
+        guard response.expectedContentLength <= Self.maximumResponseBytes,
+              data.count <= Self.maximumResponseBytes else {
             throw CloudPolishError.responseTooLarge
         }
-        var data = Data()
-        data.reserveCapacity(Int(max(response.expectedContentLength, 0)))
-        for try await byte in bytes {
-            guard data.count < Self.maximumResponseBytes else {
-                throw CloudPolishError.responseTooLarge
-            }
-            data.append(byte)
-        }
         let payload = try JSONDecoder().decode(ResponsePayload.self, from: data)
+        // A response cut short by the token budget would silently delete the end
+        // of the dictation, so treat it as a failure and keep the local text.
+        guard !payload.wasTruncated else { throw CloudPolishError.truncatedResponse }
         let result = payload.resolvedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { throw CloudPolishError.emptyResponse }
         return result
+    }
+
+    /// Polish returns text of roughly the input's length, so the budget has to
+    /// scale with the dictation instead of being pinned at a fixed ceiling.
+    /// Assumes the conventional ~4 characters per token and doubles for headroom.
+    static func outputTokenBudget(for text: String) -> Int {
+        let estimatedInputTokens = (text.count / 4) + 1
+        return min(16_384, max(1_024, estimatedInputTokens * 2))
     }
 }
 
@@ -196,14 +236,31 @@ private struct ResponsePayload: Decodable {
             let text: String?
         }
         let content: [Content]?
+        let status: String?
+    }
+
+    struct IncompleteDetails: Decodable {
+        let reason: String?
     }
 
     let outputText: String?
     let output: [Output]?
+    let status: String?
+    let incompleteDetails: IncompleteDetails?
 
     enum CodingKeys: String, CodingKey {
         case outputText = "output_text"
         case output
+        case status
+        case incompleteDetails = "incomplete_details"
+    }
+
+    /// The Responses API reports a token-limited generation as `incomplete`;
+    /// some gateways only mark the individual output item.
+    var wasTruncated: Bool {
+        if status == "incomplete" { return true }
+        if incompleteDetails?.reason == "max_output_tokens" { return true }
+        return output?.contains { $0.status == "incomplete" } == true
     }
 
     var resolvedText: String {
@@ -224,23 +281,32 @@ private struct ResponsePayload: Decodable {
 
 enum CloudPolishError: LocalizedError {
     case insecureEndpoint
+    case unconfirmedEndpointHost(String)
     case missingModel
     case missingKey
     case invalidResponse
     case requestFailed(status: Int)
     case responseTooLarge
+    case truncatedResponse
     case emptyResponse
+    case implausibleResult
     case keychain(status: OSStatus)
 
     var errorDescription: String? {
         switch self {
         case .insecureEndpoint: "Cloud polish requires an HTTPS endpoint."
+        case let .unconfirmedEndpointHost(host):
+            "Confirm \(host) in BYOK Polish settings before sending your API key there."
         case .missingModel: "Enter the model ID supplied by your API provider."
         case .missingKey: "Save an API key before enabling cloud polish."
         case .invalidResponse: "The cloud polish provider returned an invalid response."
         case let .requestFailed(status): "Cloud polish failed with HTTP status \(status)."
         case .responseTooLarge: "Cloud polish returned more data than AirScribe can safely process."
+        case .truncatedResponse:
+            "Cloud polish was cut off before it finished, so the on-device text was kept."
         case .emptyResponse: "Cloud polish returned no text."
+        case .implausibleResult:
+            "Cloud polish dropped part of the dictation, so the on-device text was kept."
         case .keychain: "The API key could not be stored securely in Keychain."
         }
     }

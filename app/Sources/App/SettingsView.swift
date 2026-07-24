@@ -120,7 +120,11 @@ private struct CloudPolishSettingsView: View {
         Form {
             Section("Optional cloud polish") {
                 Toggle("Send transcript text for BYOK polish", isOn: $model.cloudPolishEnabled)
-                    .disabled(!model.cloudKeyConfigured || model.cloudModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        !model.cloudKeyConfigured
+                            || model.cloudModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || model.cloudEndpointNeedsAcknowledgement
+                    )
                 Text("Off by default. When enabled, only transcript text is sent to the endpoint below; microphone audio is never sent. AirScribe works fully without this.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -129,6 +133,21 @@ private struct CloudPolishSettingsView: View {
             Section("Provider") {
                 TextField("HTTPS responses endpoint", text: $model.cloudEndpoint)
                     .textContentType(.URL)
+                if model.cloudEndpointNeedsAcknowledgement {
+                    // A mistyped host would receive the user's API key, so an
+                    // unrecognised destination has to be confirmed by hand.
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(
+                            "\(model.cloudEndpointHost) is not a recognised provider. Your API key would be sent there as a bearer token.",
+                            systemImage: "exclamationmark.shield.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        Button("Confirm \(model.cloudEndpointHost)") {
+                            model.acknowledgeCloudEndpointHost()
+                        }
+                    }
+                }
                 TextField("API model ID", text: $model.cloudModel)
                 SecureField(model.cloudKeyConfigured ? "Replace saved API key" : "API key", text: $apiKey)
                 HStack {
@@ -406,6 +425,14 @@ private struct GeneralSettingsView: View {
                 Text(model.waitForPolish
                      ? "AirScribe waits, then inserts the final version once."
                      : "AirScribe inserts immediately, then safely replaces untouched text when polish finishes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("When insertion is not possible") {
+                Toggle("Copy to the clipboard instead", isOn: $model.clipboardFallbackEnabled)
+                Text(model.clipboardFallbackEnabled
+                     ? "If no editable field can be confirmed, the transcript is placed on the clipboard. This replaces whatever you had copied."
+                     : "If no editable field can be confirmed, AirScribe reports an error and leaves your clipboard untouched.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

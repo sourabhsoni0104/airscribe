@@ -62,7 +62,7 @@ final class ModelManager: ObservableObject {
     ) {
         self.fileManager = fileManager
         self.manifest = manifest
-        let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let applicationSupport = ApplicationSupportLocation.root(fileManager)
         let root = modelsRoot ?? applicationSupport.appending(path: "AirScribe/models", directoryHint: .isDirectory)
         modelDirectory = root
             .appending(path: "qwen3-asr-0.6b-mlx-4bit", directoryHint: .isDirectory)
@@ -235,12 +235,18 @@ final class ModelManager: ObservableObject {
     private func fileIsValid(_ file: ModelFile, at url: URL) async throws -> Bool {
         guard fileManager.fileExists(atPath: url.path),
               fileSize(at: url) == file.size else { return false }
-        return try await verify(file, at: url)
+        // The pre-download scan must not publish progress; doing so made the UI
+        // flip between "Checking" and "Verifying 0%" once per manifest entry.
+        return try await verify(file, at: url, reportsProgress: false)
     }
 
-    private func verify(_ file: ModelFile, at url: URL) async throws -> Bool {
+    private func verify(
+        _ file: ModelFile,
+        at url: URL,
+        reportsProgress: Bool = true
+    ) async throws -> Bool {
         guard fileSize(at: url) == file.size else { return false }
-        state = .verifying(progress: 0)
+        if reportsProgress { state = .verifying(progress: 0) }
         let actualHash = try await Task.detached(priority: .utility) {
             try Self.sha256(of: url)
         }.value
@@ -365,6 +371,17 @@ private enum ModelManagerError: LocalizedError {
     }
 }
 
+enum ResumableDownloadError: LocalizedError {
+    case httpStatus(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case let .httpStatus(status):
+            "The download server replied with HTTP status \(status). Check your network or try again later."
+        }
+    }
+}
+
 final class ResumableFileDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let request: URLRequest
     private let destination: URL
@@ -445,6 +462,17 @@ final class ResumableFileDownload: NSObject, URLSessionDownloadDelegate, @unchec
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        // URLSession delivers error pages as a successful download. Without a
+        // status check an HTML 404 body is installed as the model file and only
+        // surfaces later as a misleading integrity failure.
+        if let http = downloadTask.response as? HTTPURLResponse,
+           !(200 ..< 300).contains(http.statusCode) {
+            lock.lock()
+            moveError = ResumableDownloadError.httpStatus(http.statusCode)
+            lock.unlock()
+            try? FileManager.default.removeItem(at: resumeDataURL)
+            return
+        }
         do {
             let fileManager = FileManager.default
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)

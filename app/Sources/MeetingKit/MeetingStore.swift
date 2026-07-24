@@ -78,9 +78,7 @@ final class MeetingStore: ObservableObject {
 
     init(fileManager: FileManager = .default, applicationSupportRoot: URL? = nil) {
         self.fileManager = fileManager
-        let root = applicationSupportRoot
-            ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                .appending(path: "AirScribe", directoryHint: .isDirectory)
+        let root = applicationSupportRoot ?? ApplicationSupportLocation.airScribeRoot(fileManager)
         audioDirectory = root.appending(path: "MeetingAudio", directoryHint: .isDirectory)
         recordsURL = root.appending(path: "meetings.json")
         do {
@@ -247,8 +245,13 @@ final class MeetingStore: ObservableObject {
     }
 
     private func sanitized(_ value: String) -> String {
-        value.replacingOccurrences(of: #"[^A-Za-z0-9 _-]"#, with: "", options: .regularExpression)
+        let cleaned = value
+            .replacingOccurrences(of: #"[^A-Za-z0-9 _-]"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: " ", with: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+        // A title made entirely of stripped characters would leave the save panel
+        // proposing a bare extension such as ".md".
+        return cleaned.isEmpty ? "Meeting" : cleaned
     }
 }
 

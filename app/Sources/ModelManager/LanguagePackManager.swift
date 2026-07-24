@@ -45,7 +45,7 @@ final class LanguagePackManager: ObservableObject {
         modelsRoot: URL? = nil,
         manifest: LanguagePackManifest = .production
     ) {
-        let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let support = ApplicationSupportLocation.root(fileManager)
         self.fileManager = fileManager
         let root = modelsRoot ?? support.appending(path: "AirScribe/models", directoryHint: .isDirectory)
         modelDirectory = root.appending(path: "extended-language-pack", directoryHint: .isDirectory)

@@ -20,8 +20,7 @@ final class HistoryStore: ObservableObject {
     ) {
         self.fileManager = fileManager
         self.maximumRecordCount = maximumRecordCount
-        let base = applicationSupportRoot
-            ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let base = applicationSupportRoot ?? ApplicationSupportLocation.root(fileManager)
         let directory = base.appending(path: "AirScribe", directoryHint: .isDirectory)
         fileURL = directory.appending(path: "history.json")
         audioDirectory = directory.appending(path: "audio", directoryHint: .isDirectory)

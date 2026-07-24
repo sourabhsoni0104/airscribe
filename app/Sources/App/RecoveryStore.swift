@@ -36,6 +36,13 @@ final class RecoveryStore: ObservableObject {
         lastError = nil
     }
 
+    /// Clears the persisted marker as part of a full local-data deletion.
+    func removePersistedState() {
+        defaults.removeObject(forKey: key)
+        interruptedSession = nil
+        lastError = nil
+    }
+
     func presentMarkedSession() {
         interruptedSession = decode()
     }

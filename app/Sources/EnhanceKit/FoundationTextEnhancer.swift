@@ -34,6 +34,9 @@ struct FoundationTextEnhancer: Sendable {
               """
         let response = try await session.respond(to: prompt)
         let cleaned = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? text : cleaned
+        // A model can stop early or paraphrase away content. Keep the original
+        // whenever the result no longer plausibly represents what was said.
+        guard PolishGuard.isPlausible(cleaned, polishOf: text) else { return text }
+        return cleaned
     }
 }

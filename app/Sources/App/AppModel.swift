@@ -35,7 +35,7 @@ final class AppModel: ObservableObject {
         didSet { defaults.set(useAppleIntelligence, forKey: Keys.appleIntelligence) }
     }
     @Published var customVocabulary: [String] {
-        didSet { defaults.set(customVocabulary, forKey: Keys.vocabulary) }
+        didSet { sensitivePreferences.setValue(customVocabulary, forKey: Keys.vocabulary) }
     }
     @Published var learnFromCorrections: Bool {
         didSet {
@@ -50,13 +50,22 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var learnedCorrections: [String: String] {
-        didSet { persist(learnedCorrections, key: Keys.learnedCorrections) }
+        didSet { sensitivePreferences.setValue(learnedCorrections, forKey: Keys.learnedCorrections) }
     }
+    /// Insertion order of `learnedCorrections`, oldest first, so the dictionary
+    /// can be capped instead of growing without bound for the app's lifetime.
+    private var learnedCorrectionOrder: [String] {
+        didSet { sensitivePreferences.setValue(learnedCorrectionOrder, forKey: Keys.learnedCorrectionOrder) }
+    }
+
+    /// Ceiling on retained correction rules. Each rule is replayed against every
+    /// later dictation, so the set has to stay small enough to stay predictable.
+    static let maximumLearnedCorrections = 200
     @Published var onboardingComplete: Bool {
         didSet { defaults.set(onboardingComplete, forKey: Keys.onboardingComplete) }
     }
     @Published var modeInstructions: [String: String] {
-        didSet { persist(modeInstructions, key: Keys.modeInstructions) }
+        didSet { sensitivePreferences.setValue(modeInstructions, forKey: Keys.modeInstructions) }
     }
     @Published var automaticModeSelection: Bool {
         didSet { defaults.set(automaticModeSelection, forKey: Keys.automaticModeSelection) }
@@ -74,6 +83,30 @@ final class AppModel: ObservableObject {
     }
     @Published var cloudModel: String {
         didSet { defaults.set(cloudModel, forKey: Keys.cloudModel) }
+    }
+    /// Host the user confirmed as an acceptable destination for their API key.
+    /// Required before polish will send a key to an unrecognised provider.
+    @Published var acknowledgedCloudHost: String {
+        didSet { defaults.set(acknowledgedCloudHost, forKey: Keys.acknowledgedCloudHost) }
+    }
+    /// When false, an insertion AirScribe cannot verify reports an error instead
+    /// of overwriting whatever the user had on the clipboard.
+    @Published var clipboardFallbackEnabled: Bool {
+        didSet { defaults.set(clipboardFallbackEnabled, forKey: Keys.clipboardFallbackEnabled) }
+    }
+
+    var cloudEndpointHost: String {
+        URL(string: cloudEndpoint)?.host?.lowercased() ?? ""
+    }
+
+    var cloudEndpointNeedsAcknowledgement: Bool {
+        let host = cloudEndpointHost
+        guard !host.isEmpty else { return false }
+        return !CloudTextEnhancer.isKnownProviderHost(host) && acknowledgedCloudHost != host
+    }
+
+    func acknowledgeCloudEndpointHost() {
+        acknowledgedCloudHost = cloudEndpointHost
     }
     @Published private(set) var cloudKeyConfigured = false
     @Published private(set) var isUsingCloud = false
@@ -109,6 +142,7 @@ final class AppModel: ObservableObject {
     lazy var meetings = MeetingCoordinator(speechEngine: speechEngine, permissions: permissions)
 
     private let defaults = UserDefaults.standard
+    private let sensitivePreferences = SensitivePreferenceStore()
     private let hotkey = ControlHotkeyMonitor()
     private var peekDismissalTask: Task<Void, Never>?
     private let microphone = MicrophoneCapture()
@@ -152,6 +186,7 @@ final class AppModel: ObservableObject {
         static let vocabulary = "customVocabulary"
         static let learnFromCorrections = "learnFromCorrections"
         static let learnedCorrections = "learnedCorrections"
+        static let learnedCorrectionOrder = "learnedCorrectionOrder"
         static let onboardingComplete = "onboardingComplete"
         static let modeInstructions = "modeInstructions"
         static let automaticModeSelection = "automaticModeSelection"
@@ -165,9 +200,41 @@ final class AppModel: ObservableObject {
         static let screenContextEnabled = "screenContextEnabled"
         static let assistantEnabled = "assistantEnabled"
         static let excludedContextApps = "excludedContextApps"
+        static let acknowledgedCloudHost = "acknowledgedCloudHost"
+        static let clipboardFallbackEnabled = "clipboardFallbackEnabled"
+
+        /// Every key this app writes to its defaults domain.
+        ///
+        /// `removePersistentDomain(forName:)` is documented as being for *other*
+        /// applications' domains and does not reliably clear the running
+        /// process's own cached suite, so "delete all local data" removes each
+        /// key explicitly before falling back to the domain wipe.
+        static let all: [String] = [
+            mode, dictationHotkey, locale, outputLanguageMode, preferExtendedLanguages,
+            appleIntelligence, vocabulary, learnFromCorrections, learnedCorrections,
+            learnedCorrectionOrder, onboardingComplete, modeInstructions,
+            automaticModeSelection, appModeMappings, cloudPolishEnabled, cloudEndpoint,
+            cloudModel, waitForPolish, contextAwarenessEnabled, clipboardContextEnabled,
+            screenContextEnabled, assistantEnabled, excludedContextApps,
+            acknowledgedCloudHost, clipboardFallbackEnabled
+        ]
     }
 
     private init() {
+        // Dictation content that used to sit in the defaults plist moves to the
+        // owner-only store before any of it is read back.
+        sensitivePreferences.migrateJSONValue(
+            [String: String].self,
+            forKey: Keys.learnedCorrections,
+            from: defaults
+        )
+        sensitivePreferences.migrateJSONValue(
+            [String: String].self,
+            forKey: Keys.modeInstructions,
+            from: defaults
+        )
+        sensitivePreferences.migrateStringArray(forKey: Keys.vocabulary, from: defaults)
+
         selectedMode = WritingMode(rawValue: defaults.string(forKey: Keys.mode) ?? "") ?? .general
         dictationHotkey = DictationHotkey(
             rawValue: defaults.string(forKey: Keys.dictationHotkey) ?? ""
@@ -178,11 +245,16 @@ final class AppModel: ObservableObject {
         ) ?? .original
         preferExtendedLanguages = defaults.bool(forKey: Keys.preferExtendedLanguages)
         useAppleIntelligence = defaults.object(forKey: Keys.appleIntelligence) as? Bool ?? true
-        customVocabulary = defaults.stringArray(forKey: Keys.vocabulary) ?? []
+        customVocabulary = sensitivePreferences.value([String].self, forKey: Keys.vocabulary) ?? []
         learnFromCorrections = defaults.object(forKey: Keys.learnFromCorrections) as? Bool ?? true
-        learnedCorrections = Self.decode([String: String].self, from: defaults, key: Keys.learnedCorrections) ?? [:]
+        let storedCorrections = sensitivePreferences
+            .value([String: String].self, forKey: Keys.learnedCorrections) ?? [:]
+        learnedCorrections = storedCorrections
+        learnedCorrectionOrder = (sensitivePreferences
+            .value([String].self, forKey: Keys.learnedCorrectionOrder) ?? [])
+            .filter { storedCorrections[$0] != nil }
         onboardingComplete = defaults.bool(forKey: Keys.onboardingComplete)
-        modeInstructions = Self.decode([String: String].self, from: defaults, key: Keys.modeInstructions)
+        modeInstructions = sensitivePreferences.value([String: String].self, forKey: Keys.modeInstructions)
             ?? Dictionary(uniqueKeysWithValues: WritingMode.allCases.map { ($0.rawValue, $0.enhancementInstruction) })
         automaticModeSelection = defaults.object(forKey: Keys.automaticModeSelection) as? Bool ?? true
         appModeMappings = Self.decode([AppModeMapping].self, from: defaults, key: Keys.appModeMappings) ?? []
@@ -196,6 +268,8 @@ final class AppModel: ObservableObject {
         screenContextEnabled = defaults.bool(forKey: Keys.screenContextEnabled)
         assistantEnabled = defaults.object(forKey: Keys.assistantEnabled) as? Bool ?? true
         excludedContextApps = defaults.stringArray(forKey: Keys.excludedContextApps) ?? []
+        acknowledgedCloudHost = defaults.string(forKey: Keys.acknowledgedCloudHost) ?? ""
+        clipboardFallbackEnabled = defaults.object(forKey: Keys.clipboardFallbackEnabled) as? Bool ?? true
 
         hotkey.selectedHotkey = dictationHotkey
         hotkey.onBegin = { [weak self] in
@@ -460,56 +534,29 @@ final class AppModel: ObservableObject {
             if requiresPolishedInsertion {
                 initialInsertion = nil
             } else {
-                initialInsertion = try await textInserter.insert(immediateText)
+                initialInsertion = try await textInserter.insert(
+                    immediateText,
+                    allowClipboardFallback: clipboardFallbackEnabled
+                )
             }
             let insertionHandle = initialInsertion?.handle
             var copiedToClipboard = initialInsertion?.wasCopiedToClipboard ?? false
+            let polishIsWanted = invocation == nil
+                && modeUsesGenerativePolish
+                && (!isPlainQuestion || selectedMode == .email)
             var enhanced = immediateText
-            let shouldPolishQuestion = selectedMode == .email
-            if invocation == nil,
-               modeUsesGenerativePolish,
-               (!isPlainQuestion || shouldPolishQuestion),
-               useAppleIntelligence,
-               foundationEnhancer.isAvailable {
-                if let polished = try? await foundationEnhancer.enhance(
-                    enhanced,
-                    mode: selectedMode,
-                    instruction: polishInstruction(for: selectedMode),
-                    context: activeContext
-                ) {
-                    enhanced = polished
-                }
-            }
-            if invocation == nil,
-               modeUsesGenerativePolish,
-               (!isPlainQuestion || shouldPolishQuestion),
-               cloudPolishEnabled {
-                isUsingCloud = true
-                do {
-                    guard let endpoint = URL(string: cloudEndpoint),
-                          let apiKey = try cloudAPIKeyStore.read(),
-                          !apiKey.isEmpty else { throw CloudPolishError.missingKey }
-                    enhanced = try await cloudEnhancer.enhance(
-                        enhanced,
-                        instruction: polishInstruction(for: selectedMode),
-                        configuration: CloudPolishConfiguration(
-                            endpoint: endpoint,
-                            model: cloudModel,
-                            apiKey: apiKey
-                        )
-                    )
-                    lastCloudError = nil
-                } catch {
-                    // A cloud outage must never block dictation. The on-device result is inserted instead.
-                    lastCloudError = error.localizedDescription
-                }
-                isUsingCloud = false
+            if polishIsWanted {
+                enhanced = await onDevicePolished(enhanced)
+                enhanced = await cloudPolished(enhanced)
             }
 
             var insertedText = immediateText
             var finalInsertionHandle = insertionHandle
             if requiresPolishedInsertion {
-                let result = try await textInserter.insert(enhanced)
+                let result = try await textInserter.insert(
+                    enhanced,
+                    allowClipboardFallback: clipboardFallbackEnabled
+                )
                 finalInsertionHandle = result.handle
                 copiedToClipboard = result.wasCopiedToClipboard
                 insertedText = enhanced
@@ -588,6 +635,53 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Applies Apple Intelligence polish, keeping the input when the model is
+    /// unavailable, fails, or returns text that no longer represents the speech.
+    private func onDevicePolished(_ text: String) async -> String {
+        guard useAppleIntelligence, foundationEnhancer.isAvailable else { return text }
+        guard let polished = try? await foundationEnhancer.enhance(
+            text,
+            mode: selectedMode,
+            instruction: polishInstruction(for: selectedMode),
+            context: activeContext
+        ), PolishGuard.isPlausible(polished, polishOf: text) else { return text }
+        return polished
+    }
+
+    /// Applies the user's own cloud provider, if configured.
+    ///
+    /// A cloud outage, a truncated generation, or a result that dropped content
+    /// must never block dictation: the error is surfaced in Settings and the
+    /// on-device text is used instead.
+    private func cloudPolished(_ text: String) async -> String {
+        guard cloudPolishEnabled else { return text }
+        isUsingCloud = true
+        defer { isUsingCloud = false }
+        do {
+            guard let endpoint = URL(string: cloudEndpoint),
+                  let apiKey = try cloudAPIKeyStore.read(),
+                  !apiKey.isEmpty else { throw CloudPolishError.missingKey }
+            let polished = try await cloudEnhancer.enhance(
+                text,
+                instruction: polishInstruction(for: selectedMode),
+                configuration: CloudPolishConfiguration(
+                    endpoint: endpoint,
+                    model: cloudModel,
+                    apiKey: apiKey,
+                    acknowledgedHost: acknowledgedCloudHost
+                )
+            )
+            guard PolishGuard.isPlausible(polished, polishOf: text) else {
+                throw CloudPolishError.implausibleResult
+            }
+            lastCloudError = nil
+            return polished
+        } catch {
+            lastCloudError = error.localizedDescription
+            return text
+        }
+    }
+
     func cancelDictation() async {
         microphone.stop()
         let session = activeSession
@@ -617,6 +711,24 @@ final class AppModel: ObservableObject {
 
     func removeLearnedCorrection(_ heard: String) {
         learnedCorrections.removeValue(forKey: heard)
+        learnedCorrectionOrder.removeAll { $0 == heard }
+    }
+
+    /// Stores a correction rule, evicting the oldest once the cap is reached.
+    private func recordLearnedCorrection(heard: String, correction: String) {
+        guard !BasicTextEnhancer.shouldNotPropagate(heard: heard, correction: correction) else { return }
+        if learnedCorrections[heard] == nil {
+            while learnedCorrectionOrder.count >= Self.maximumLearnedCorrections,
+                  let oldest = learnedCorrectionOrder.first {
+                learnedCorrectionOrder.removeFirst()
+                learnedCorrections.removeValue(forKey: oldest)
+            }
+            learnedCorrectionOrder.append(heard)
+        } else {
+            learnedCorrectionOrder.removeAll { $0 == heard }
+            learnedCorrectionOrder.append(heard)
+        }
+        learnedCorrections[heard] = correction
     }
 
     private func observeClipboardCorrection(to copiedText: String) {
@@ -683,7 +795,7 @@ final class AppModel: ObservableObject {
                 }
                 guard stableObservations >= 4 else { continue }
                 for (heard, correction) in learning.replacements {
-                    self.learnedCorrections[heard] = correction
+                    self.recordLearnedCorrection(heard: heard, correction: correction)
                 }
                 learning.vocabulary.forEach(self.addVocabularyTerm)
                 if let learned = learning.replacements.sorted(by: { $0.key < $1.key }).first {
@@ -820,22 +932,13 @@ final class AppModel: ObservableObject {
         }
 
         let fileManager = FileManager.default
-        var applicationSupportURL: URL?
-        if let applicationSupport = fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first {
-            let url = applicationSupport.appending(path: "AirScribe", directoryHint: .isDirectory)
-            applicationSupportURL = url
-            do {
-                if fileManager.fileExists(atPath: url.path) {
-                    try fileManager.removeItem(at: url)
-                }
-            } catch {
-                failures.append("application data: \(error.localizedDescription)")
+        let applicationSupportURL = ApplicationSupportLocation.airScribeRoot(fileManager)
+        do {
+            if fileManager.fileExists(atPath: applicationSupportURL.path) {
+                try fileManager.removeItem(at: applicationSupportURL)
             }
-        } else {
-            failures.append("the Application Support folder could not be located")
+        } catch {
+            failures.append("application data: \(error.localizedDescription)")
         }
         let temporaryBuffers = fileManager.temporaryDirectory
             .appending(path: "AirScribe", directoryHint: .isDirectory)
@@ -848,17 +951,16 @@ final class AppModel: ObservableObject {
             failures.append("temporary transcription buffers: \(error.localizedDescription)")
         }
 
-        if let applicationSupportURL,
-           fileManager.fileExists(atPath: applicationSupportURL.path) {
+        if fileManager.fileExists(atPath: applicationSupportURL.path) {
             failures.append(contentsOf: supportDeletionFailures)
             failures.append("some AirScribe application data remains on disk")
         } else {
             // Keep the live stores consistent after the containing directory was
-            // successfully removed, including stores that initially failed to load.
+            // successfully removed, including stores that initially failed to
+            // load. The managers were already torn down above, so only the
+            // in-memory stores need clearing here.
             try? history.deleteAll()
             try? meetings.store.deleteAll()
-            await modelManager.removeInstallation()
-            await languagePackManager.removeAndWait()
             recovery.complete()
         }
         if fileManager.fileExists(atPath: temporaryBuffers.path) {
@@ -889,6 +991,7 @@ final class AppModel: ObservableObject {
         learningFeedbackTask?.cancel()
         learningFeedbackTask = nil
         learnedCorrections = [:]
+        learnedCorrectionOrder = []
         onboardingComplete = false
         modeInstructions = Dictionary(
             uniqueKeysWithValues: WritingMode.allCases.map {
@@ -904,15 +1007,40 @@ final class AppModel: ObservableObject {
         screenContextEnabled = false
         assistantEnabled = true
         excludedContextApps = []
+        acknowledgedCloudHost = ""
+        clipboardFallbackEnabled = true
         activeContext = .empty
         lastContextSummary = "No context captured"
         partialTranscript = ""
         audioLevel = 0
         phase = .idle
 
+        // Settings reset above rewrote the owner-only preference file, so it is
+        // cleared after them rather than before.
+        sensitivePreferences.removeAll()
+
+        // Remove every known key first: removePersistentDomain(forName:) is
+        // documented for other applications' domains and leaves the running
+        // process's own cached suite in place, so settings could reappear.
+        for key in Keys.all {
+            defaults.removeObject(forKey: key)
+        }
+        recovery.removePersistedState()
         defaults.removePersistentDomain(
             forName: Bundle.main.bundleIdentifier ?? "com.airscribe.mac"
         )
+        var residualKeys = Keys.all.filter { defaults.object(forKey: $0) != nil }
+        if !residualKeys.isEmpty {
+            // A second explicit pass covers keys the domain wipe re-cached.
+            for key in residualKeys { defaults.removeObject(forKey: key) }
+            residualKeys = Keys.all.filter { defaults.object(forKey: $0) != nil }
+        }
+        if !residualKeys.isEmpty {
+            failures.append("some AirScribe settings could not be cleared")
+        }
+        if let storeError = sensitivePreferences.lastError {
+            failures.append("learning data: \(storeError)")
+        }
 
         if !failures.isEmpty {
             let message = "Some private data could not be deleted: \(failures.joined(separator: "; ")). Try again after closing apps that may be using those files."
@@ -947,10 +1075,14 @@ final class AppModel: ObservableObject {
     }
 
     func show(_ error: Error) {
-        phase = .error(error.localizedDescription)
+        let message = error.localizedDescription
+        phase = .error(message)
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            if case .error = self?.phase { self?.phase = .idle }
+            // Only clear the error this call raised; a newer, different error
+            // must stay on screen for its own full duration.
+            guard self?.phase == .error(message) else { return }
+            self?.phase = .idle
         }
     }
 
@@ -984,13 +1116,24 @@ final class AppModel: ObservableObject {
         return sections.isEmpty ? nil : sections.joined(separator: "\n")
     }
 
+    /// Single-word terms harvested from the captured context, used to fix casing
+    /// of names the speaker just read on screen.
+    ///
+    /// Each term costs regex work in `BasicTextEnhancer` during the insertion hot
+    /// path, so the list is capped well below what phrase extraction yields.
+    static let maximumContextualVocabularyTerms = 24
+
     private func contextualVocabularyTerms() -> [String] {
         guard !activeContext.isEmpty else { return [] }
-        return SpeechContextPhrases.extract(from: activeContext.promptContext)
+        let candidates = SpeechContextPhrases.extract(from: activeContext.promptContext)
             .filter { phrase in
                 !phrase.contains(where: \.isWhitespace)
                     && phrase.allSatisfy { $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" }
             }
+        return BasicTextEnhancer.deduplicated(
+            candidates,
+            limit: Self.maximumContextualVocabularyTerms
+        )
     }
 
     private func contextSummary(_ snapshot: ContextSnapshot) -> String {
