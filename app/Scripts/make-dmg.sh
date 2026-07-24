@@ -51,6 +51,16 @@ mkdir -p "${CONTENTS_DIR}"
 ditto "${APP_PATH}" "${CONTENTS_DIR}/AirScribe.app"
 ln -s /Applications "${CONTENTS_DIR}/Applications"
 
+# Give the mounted volume the app's own icon instead of a blank disk. Finder
+# reads .VolumeIcon.icns from the volume root, but only when the volume carries
+# the custom-icon flag, which is set after mounting below.
+APP_ICON=${APP_PATH}/Contents/Resources/AppIcon.icns
+if [[ -f ${APP_ICON} ]]; then
+  ditto "${APP_ICON}" "${CONTENTS_DIR}/.VolumeIcon.icns"
+else
+  print -u2 "Note: ${APP_ICON:t} not found, the volume will use the default disk icon."
+fi
+
 rm -f "${DMG_PATH}"
 hdiutil create \
   -srcfolder "${CONTENTS_DIR}" \
@@ -63,6 +73,18 @@ hdiutil create \
 
 mkdir -p "${MOUNT_POINT}"
 hdiutil attach "${READWRITE_DMG}" -mountpoint "${MOUNT_POINT}" -nobrowse -quiet
+
+# Tell Finder the volume has its own icon. SetFile ships with Xcode; the xattr
+# fallback writes the same FinderInfo bit so this works without it.
+if [[ -f ${MOUNT_POINT}/.VolumeIcon.icns ]]; then
+  if command -v SetFile >/dev/null 2>&1; then
+    SetFile -a C "${MOUNT_POINT}"
+  else
+    xattr -wx com.apple.FinderInfo \
+      "0000000000000000040000000000000000000000000000000000000000000000" \
+      "${MOUNT_POINT}"
+  fi
+fi
 
 # Position the two icons so the drag gesture is obvious on first open. Finder
 # automation is not available on every machine or CI runner, so a failure here
