@@ -7,5 +7,4 @@ app/*.xcodeproj/xcuserdata/
 *.xcarchive
 app/Config/Release.xcconfig
 google-backup-codes-*.txt
-/readme.md
 /app/README.md
