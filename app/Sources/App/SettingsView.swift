@@ -766,8 +766,10 @@ private struct PrivacySettingsView: View {
                     Button("Open Privacy & Security Settings") { permissions.openPrivacySettings() }
                     if permissions.accessibilityGrantIsStale {
                         Button("Reset Permission") {
-                            if permissions.resetAccessibilityPermission() {
-                                model.requestControlAndInsertionPermission()
+                            Task {
+                                if await permissions.resetAccessibilityPermission() {
+                                    model.requestControlAndInsertionPermission()
+                                }
                             }
                         }
                         .help("Removes the stale entry so macOS asks again")

@@ -1,6 +1,6 @@
 cask "airscribe" do
   version "1.0.0"
-  sha256 "8e3173b60f28dc141b1347eb6a872aab57ff4d6712cdf412b6a64c2b67a23ccd"
+  sha256 "dbdf1130793c3170a3a27d2086b1121128c4658f2f8c590d2e7f0bfdb56549af"
 
   url "https://github.com/sourabhsoni0104/airscribe/releases/download/v#{version}/AirScribe-#{version}.dmg"
   name "AirScribe"

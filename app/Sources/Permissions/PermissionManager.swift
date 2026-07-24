@@ -58,21 +58,30 @@ final class PermissionManager: ObservableObject {
     ///
     /// `tccutil` matches on the signing identifier, which is why builds are signed
     /// with the bundle identifier rather than left linker-signed.
+    /// Runs off the main actor: waiting on a subprocess from a button action would
+    /// freeze the window for as long as tccutil takes.
+    ///
+    /// Spawning a helper requires an unsandboxed app, which AirScribe is because
+    /// it needs Accessibility anyway. Sandboxing it later would break this.
     @discardableResult
-    func resetAccessibilityPermission() -> Bool {
+    func resetAccessibilityPermission() async -> Bool {
         let identifier = Bundle.main.bundleIdentifier ?? "com.airscribe.mac"
-        let process = Process()
-        process.executableURL = URL(filePath: "/usr/bin/tccutil")
-        process.arguments = ["reset", "Accessibility", identifier]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return false
-        }
-        guard process.terminationStatus == 0 else { return false }
+        let succeeded = await Task.detached(priority: .userInitiated) { () -> Bool in
+            let process = Process()
+            process.executableURL = URL(filePath: "/usr/bin/tccutil")
+            process.arguments = ["reset", "Accessibility", identifier]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                return false
+            }
+            return process.terminationStatus == 0
+        }.value
+
+        guard succeeded else { return false }
         defaults.set(false, forKey: everTrustedKey)
         accessibilityGrantIsStale = false
         refresh()

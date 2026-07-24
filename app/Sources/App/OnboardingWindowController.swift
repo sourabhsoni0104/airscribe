@@ -97,10 +97,12 @@ private struct OnboardingView: View {
                     ) {
                         // A stale grant cannot be repaired by asking again: macOS
                         // already lists the app as allowed. Clear the record first.
-                        if permissions.accessibilityGrantIsStale {
-                            permissions.resetAccessibilityPermission()
+                        Task {
+                            if permissions.accessibilityGrantIsStale {
+                                await permissions.resetAccessibilityPermission()
+                            }
+                            model.requestControlAndInsertionPermission()
                         }
-                        model.requestControlAndInsertionPermission()
                     }
                     SetupCard(
                         number: "3",
