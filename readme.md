@@ -38,7 +38,7 @@ If the [Releases page](https://github.com/sourabhsoni0104/airscribe/releases) do
 
 Released builds are signed with a Developer ID and notarized by Apple, so they open without any warnings. The app is about 43 MB. It contains no speech models; those get downloaded later, onto your machine, and you can delete them whenever you like.
 
-If macOS complains that the developer can't be verified, you have an unsigned build. Right-click the app and pick Open, or clear the quarantine flag:
+If macOS says it cannot verify the app is free of malware, you have an unsigned build. Since macOS 15, right-clicking and choosing Open no longer gets past this. Either open System Settings, go to Privacy & Security, scroll to the message about AirScribe and click Open Anyway, or clear the quarantine flag from the Terminal:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/AirScribe.app
