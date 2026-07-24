@@ -48,6 +48,7 @@
 		9899C5E37F579099714B6A6B /* BasicTextEnhancerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05BDDBD90F814A7846E8DB2 /* BasicTextEnhancerTests.swift */; };
 		9D829AA7C3217AB824A6A2A0 /* AudioChunkingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35330AD1A52AF9DD197511D2 /* AudioChunkingTests.swift */; };
 		A217A05C3FB349C092C18402 /* UpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A40FB6D40B1B07DF884867E /* UpdateController.swift */; };
+		A589DF4CBA2601E20A0E744D /* OnDeviceLanguageModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B02C32AC78BF198106EFB0 /* OnDeviceLanguageModel.swift */; };
 		A8A83DABCC57B849BAA3DA64 /* MicrophoneCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27B801834E912B203590FA52 /* MicrophoneCapture.swift */; };
 		B30CB9906E0A5D4D1E298297 /* SecureInputGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50C81FA160AE41D99D20DD7B /* SecureInputGuard.swift */; };
 		BAECF73D4F7BFF97C7F878F5 /* MeetingSegmenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A46734A3BB615732A4AF851 /* MeetingSegmenterTests.swift */; };
@@ -121,6 +122,7 @@
 		9599096530AC747F3AE41FC6 /* SecureInputGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureInputGuardTests.swift; sourceTree = "<group>"; };
 		9A03ED1DA799B828931B8CA9 /* AirScribeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirScribeApp.swift; sourceTree = "<group>"; };
 		A254FE4435FF0B526017ADC2 /* BasicTextEnhancer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BasicTextEnhancer.swift; sourceTree = "<group>"; };
+		A2B02C32AC78BF198106EFB0 /* OnDeviceLanguageModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnDeviceLanguageModel.swift; sourceTree = "<group>"; };
 		A5F3C341D18B7352F869B4B9 /* ApplicationSupportLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationSupportLocation.swift; sourceTree = "<group>"; };
 		A6331EC643C0FFF5272E46DB /* HistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryStore.swift; sourceTree = "<group>"; };
 		AD9917EC84B9128FC72A7F27 /* OnboardingWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWindowController.swift; sourceTree = "<group>"; };
@@ -222,6 +224,7 @@
 				C5E4A65E6CD64AF328015D0D /* CloudTextEnhancer.swift */,
 				F1D99817EE706CE3C64D261F /* EmailFraming.swift */,
 				4915BE73187BBA181538556C /* FoundationTextEnhancer.swift */,
+				A2B02C32AC78BF198106EFB0 /* OnDeviceLanguageModel.swift */,
 				3E79A4406A33F2A83586827E /* OnDeviceTranslator.swift */,
 				6AF8006507358F549EBD5B75 /* PolishGuard.swift */,
 			);
@@ -494,6 +497,7 @@
 				51C71C955CC6A2DCDCB35F5B /* Models.swift in Sources */,
 				1C08A77171BE1D6B195D533D /* NotchPanelController.swift in Sources */,
 				CB6B638AE942C34ABDB47707 /* NotchView.swift in Sources */,
+				A589DF4CBA2601E20A0E744D /* OnDeviceLanguageModel.swift in Sources */,
 				10835376A532F1A229CCAB17 /* OnDeviceTranslator.swift in Sources */,
 				71F4DA586F7FC891B610DACC /* OnboardingWindowController.swift in Sources */,
 				50BDFD25198EBD4FA42E1FD1 /* PermissionManager.swift in Sources */,

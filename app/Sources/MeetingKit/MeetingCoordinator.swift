@@ -1,7 +1,6 @@
 @preconcurrency import AVFAudio
 import AudioCommon
 import Foundation
-import FoundationModels
 
 enum MeetingCaptureState: Equatable {
     case idle
@@ -515,44 +514,32 @@ struct MeetingSummarizer {
         Keep every distinct decision and action item. Do not invent facts, owners, or dates. Omit a section when nothing supports it.
         """
 
+    private let languageModel = OnDeviceLanguageModel()
+
     func summarize(_ transcript: String) async -> String {
-        let model = SystemLanguageModel.default
-        guard model.isAvailable else { return Self.outlineFallback(transcript) }
+        guard languageModel.isAvailable else { return Self.outlineFallback(transcript) }
 
         let segments = Self.segments(of: transcript)
         var partials: [String] = []
         for segment in segments {
-            guard let value = await Self.respond(
-                to: segment,
+            guard let value = await languageModel.attemptResponse(
                 instructions: Self.summaryInstructions,
-                model: model
+                to: segment
             ) else { continue }
             partials.append(value)
         }
 
         if partials.isEmpty { return Self.outlineFallback(transcript) }
         if partials.count == 1 { return partials[0] }
-        if let merged = await Self.respond(
+        if let merged = await languageModel.attemptResponse(
+            instructions: Self.reduceInstructions,
             to: partials.enumerated()
                 .map { "Part \($0.offset + 1):\n\($0.element)" }
-                .joined(separator: "\n\n"),
-            instructions: Self.reduceInstructions,
-            model: model
+                .joined(separator: "\n\n")
         ) {
             return merged
         }
         return partials.joined(separator: "\n\n")
-    }
-
-    private static func respond(
-        to prompt: String,
-        instructions: String,
-        model: SystemLanguageModel
-    ) async -> String? {
-        let session = LanguageModelSession(model: model, instructions: instructions)
-        guard let response = try? await session.respond(to: prompt) else { return nil }
-        let value = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
     }
 
     /// Splits on blank-line speaker turns so a segment never cuts a sentence.

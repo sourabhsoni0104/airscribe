@@ -1,11 +1,12 @@
 import Foundation
-import FoundationModels
 
 struct AssistantInvocation: Equatable, Sendable {
     let command: String
 }
 
 struct AssistantEngine {
+    private let languageModel = OnDeviceLanguageModel()
+
     /// The brand name spoken plainly, with or without a "hey" prefix.
     private static let wakePhrasePattern = try! NSRegularExpression(
         pattern: #"(?i)^\s*(?:hey[\s,;:!.?—–-]+)?air[\s-]*(?:scribe(?:s)?|scrib|stripe|script)\b[\s,;:!.?—–-]*(.*)$"#
@@ -98,18 +99,6 @@ struct AssistantEngine {
         context: ContextSnapshot,
         recentText: [String]
     ) async throws -> String {
-        let model = SystemLanguageModel.default
-        guard model.isAvailable else {
-            return deterministicFallback(invocation: invocation, context: context, recentText: recentText)
-        }
-        let session = LanguageModelSession(
-            model: model,
-            instructions: """
-            You are AirScribe's private inline writing assistant. Follow the user's command using only the supplied local context.
-            Never claim to have opened, sent, deleted, or changed anything. Do not invent facts.
-            Return only the text that should be inserted into the active app.
-            """
-        )
         let prompt = """
         Command: \(invocation.command)
 
@@ -119,9 +108,17 @@ struct AssistantEngine {
         Recent dictated text:
         \(recentText.isEmpty ? "None" : recentText.joined(separator: "\n"))
         """
-        let response = try await session.respond(to: prompt)
-        let value = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { throw AssistantError.emptyResponse }
+        guard languageModel.isAvailable else {
+            return deterministicFallback(invocation: invocation, context: context, recentText: recentText)
+        }
+        guard let value = try await languageModel.respond(
+            instructions: """
+            You are AirScribe's private inline writing assistant. Follow the user's command using only the supplied local context.
+            Never claim to have opened, sent, deleted, or changed anything. Do not invent facts.
+            Return only the text that should be inserted into the active app.
+            """,
+            to: prompt
+        ) else { throw AssistantError.emptyResponse }
         return value
     }
 

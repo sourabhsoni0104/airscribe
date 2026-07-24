@@ -137,8 +137,14 @@ final class ContextManager {
         return axValue
     }
 
+    /// Screen-text context needs a one-shot screenshot API that arrived in
+    /// macOS 15.2. Older systems simply contribute no screen text; the feature is
+    /// opt-in and every other context source still works.
     private func captureImage(in rect: CGRect) async throws -> CGImage {
-        try await withCheckedThrowingContinuation { continuation in
+        guard #available(macOS 15.2, *) else {
+            throw ContextCaptureError.screenshotUnavailable
+        }
+        return try await withCheckedThrowingContinuation { continuation in
             SCScreenshotManager.captureImage(in: rect) { image, error in
                 if let image {
                     continuation.resume(returning: image)

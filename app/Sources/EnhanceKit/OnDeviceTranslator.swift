@@ -1,24 +1,21 @@
 import Foundation
-import FoundationModels
 
 struct OnDeviceTranslator: Sendable {
+    private let model = OnDeviceLanguageModel()
+
     func translateToEnglish(_ text: String) async throws -> String {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return text }
-        let model = SystemLanguageModel.default
         guard model.isAvailable else { throw TranslationError.unavailable }
 
-        let session = LanguageModelSession(
-            model: model,
+        guard let translated = try await model.respond(
             instructions: """
             Translate the supplied speech transcript faithfully into natural English.
             Preserve every fact, name, number, URL, list, and formatting choice. Do not summarize, answer, explain, or add information.
             If the text is already English, return it unchanged. Return only the resulting text.
-            """
-        )
-        let response = try await session.respond(to: value)
-        let translated = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !translated.isEmpty else { throw TranslationError.emptyResponse }
+            """,
+            to: value
+        ) else { throw TranslationError.emptyResponse }
         // Names, identifiers, and numbers the speaker said verbatim must survive
         // translation. Callers keep the original transcript when this throws.
         guard PolishGuard.isPlausibleTranslation(translated, of: value) else {
