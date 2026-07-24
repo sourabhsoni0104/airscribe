@@ -202,7 +202,7 @@ final class MeetingCoordinator: ObservableObject {
         do {
             async let microphoneResult = finish(microphoneSession)
             async let systemResult = finish(systemSession)
-            var (microphoneCapture, systemCapture) = try await (microphoneResult, systemResult)
+            var (microphoneCapture, systemCapture) = await (microphoneResult, systemResult)
             var microphoneText = microphoneCapture.text
             var systemText = systemCapture.text
             switch outputLanguageMode {
@@ -254,6 +254,8 @@ final class MeetingCoordinator: ObservableObject {
             let transcript = segments
                 .map { "\($0.speaker.rawValue): \($0.text)" }
                 .joined(separator: "\n\n")
+            // Both tracks silent means nothing was said and nothing played, which
+            // is the only case where there is genuinely nothing worth keeping.
             guard !transcript.isEmpty else { throw AirScribeError.emptyTranscription }
             let summary = await summarizer.summarize(transcript)
             let record = MeetingRecord(
@@ -323,14 +325,30 @@ final class MeetingCoordinator: ObservableObject {
             : .error("Some meeting audio could not be deleted: \(cleanupFailures.joined(separator: ", ")).")
     }
 
-    private func finish(_ session: (any TranscriptionSession)?) async throws -> MeetingTranscriptionResult {
+    /// Finishes one track without letting it take the meeting down with it.
+    ///
+    /// A meeting has two tracks, and one of them is routinely silent: nothing is
+    /// playing on the Mac while you talk, so the system track transcribes to
+    /// nothing and throws. That throw used to abort the whole save and delete both
+    /// recordings, losing the speech that was captured perfectly well. A quiet
+    /// track is normal, so it now yields an empty result and the meeting is still
+    /// written as long as either track produced text.
+    private func finish(_ session: (any TranscriptionSession)?) async -> MeetingTranscriptionResult {
         guard let session else { return .empty }
-        let text = try await session.finish().trimmingCharacters(in: .whitespacesAndNewlines)
-        return MeetingTranscriptionResult(
-            text: text,
-            timings: session.wordTimings,
-            duration: session.capturedAudioDuration
-        )
+        do {
+            let text = try await session.finish().trimmingCharacters(in: .whitespacesAndNewlines)
+            return MeetingTranscriptionResult(
+                text: text,
+                timings: session.wordTimings,
+                duration: session.capturedAudioDuration
+            )
+        } catch {
+            return MeetingTranscriptionResult(
+                text: "",
+                timings: session.wordTimings,
+                duration: session.capturedAudioDuration
+            )
+        }
     }
 
     private func refreshLiveTranscript() {
@@ -444,8 +462,22 @@ final class MeetingCoordinator: ObservableObject {
         return "\(error.localizedDescription) Some meeting audio could not be deleted: \(cleanupFailures.joined(separator: ", "))."
     }
 
+    /// Titles carry the exact start date and time, to the second.
+    ///
+    /// The abbreviated, minute-resolution format meant two meetings started in the
+    /// same minute were indistinguishable in the list, and the seconds the record
+    /// already stored were never shown. Fixed field widths keep the list sorted
+    /// correctly when read as text.
+    static let titleDateFormat: Date.FormatStyle = Date.FormatStyle()
+        .year(.defaultDigits)
+        .month(.twoDigits)
+        .day(.twoDigits)
+        .hour(.twoDigits(amPM: .omitted))
+        .minute(.twoDigits)
+        .second(.twoDigits)
+
     private func defaultTitle(for date: Date) -> String {
-        "Meeting " + date.formatted(date: .abbreviated, time: .shortened)
+        "Meeting " + date.formatted(Self.titleDateFormat)
     }
 
     nonisolated private static func makeBuffer(samples: [Float], format: AVAudioFormat) -> AVAudioPCMBuffer? {

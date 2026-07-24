@@ -114,6 +114,12 @@ struct MenuContentView: View {
                 Button("Setup & permissions…") { model.showOnboarding() }
                 Button("Check for Updates…") { model.updates.checkForUpdates() }
                     .disabled(!model.updates.isReady)
+                Button("Send Feedback…") {
+                    FeedbackComposer.compose(
+                        modelState: model.modelManager.state.title,
+                        engine: model.history.records.first?.engine
+                    )
+                }
                 SettingsLink { Text("Settings…") }
                 Button("Quit AirScribe") {
                     // Let the menu finish dispatching the button action before its

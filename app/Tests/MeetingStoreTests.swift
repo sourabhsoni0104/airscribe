@@ -94,4 +94,20 @@ final class MeetingStoreTests: XCTestCase {
             systemAudioPath: systemPath
         )
     }
+
+    func testMeetingTitlesCarryTheExactDateAndTime() throws {
+        // Two meetings a few seconds apart must stay distinguishable, which the
+        // old minute-resolution title could not manage.
+        let first = Date(timeIntervalSince1970: 1_800_000_000)
+        let second = first.addingTimeInterval(7)
+        let titles = [first, second].map {
+            "Meeting " + $0.formatted(MeetingCoordinator.titleDateFormat)
+        }
+        XCTAssertNotEqual(titles[0], titles[1])
+        for title in titles {
+            XCTAssertTrue(title.contains(":"), "Title must include a time")
+            // Seconds are what makes two meetings in the same minute distinct.
+            XCTAssertEqual(title.filter { $0 == ":" }.count, 2, "Title needs hour, minute and second")
+        }
+    }
 }
