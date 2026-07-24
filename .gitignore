@@ -9,3 +9,5 @@ google-backup-codes-*.txt
 app/build/
 app/Config/Release.xcconfig
 *.xcarchive
+/readme.md
+/app/README.md
