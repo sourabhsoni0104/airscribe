@@ -133,6 +133,7 @@ final class ModelManager: ObservableObject {
             }
 
             let resumeURL = modelDirectory.appending(path: ".\(file.path).resume")
+            let completedBeforeDownload = completedSize
             let download = ResumableFileDownload(
                 request: URLRequest(url: file.downloadURL),
                 destination: destination,
@@ -141,7 +142,7 @@ final class ModelManager: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     let received = Int64(Double(file.size) * fileProgress)
-                    let overall = Double(completedSize + received) / Double(totalSize)
+                    let overall = Double(completedBeforeDownload + received) / Double(totalSize)
                     self.state = .downloading(
                         progress: min(max(overall, 0), 1),
                         file: file.path
