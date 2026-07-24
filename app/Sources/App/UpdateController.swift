@@ -18,7 +18,7 @@ final class UpdateController: ObservableObject {
         controller.updater.automaticallyChecksForUpdates = true
         controller.updater.automaticallyDownloadsUpdates = true
         isReady = true
-        statusMessage = "Automatic update checks are on."
+        statusMessage = "Update checks are ready. Signed releases will appear here after publication."
     }
 
     func checkForUpdates() {

@@ -59,6 +59,8 @@ targets:
         product: Sparkle
     settings:
       base:
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: NO
         PRODUCT_BUNDLE_IDENTIFIER: com.airscribe.mac
         PRODUCT_NAME: AirScribe
         CODE_SIGN_STYLE: Automatic

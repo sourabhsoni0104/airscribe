@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 final class HistoryStore: ObservableObject {
     @Published private(set) var records: [DictationRecord] = []
+    @Published private(set) var lastError: String?
 
     private let fileURL: URL
     private let audioDirectory: URL
@@ -21,10 +22,8 @@ final class HistoryStore: ObservableObject {
         let base = applicationSupportRoot
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let directory = base.appending(path: "AirScribe", directoryHint: .isDirectory)
-        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         fileURL = directory.appending(path: "history.json")
         audioDirectory = directory.appending(path: "audio", directoryHint: .isDirectory)
-        try? fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
 
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -32,33 +31,87 @@ final class HistoryStore: ObservableObject {
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
-        load()
+        do {
+            try fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+            try load()
+        } catch {
+            lastError = "Dictation history could not be loaded: \(error.localizedDescription)"
+        }
     }
 
-    func add(_ record: DictationRecord) {
+    func add(_ record: DictationRecord) throws {
+        let previousRecords = records
         records.insert(record, at: 0)
+        let evictedRecords: ArraySlice<DictationRecord>
         if records.count > maximumRecordCount {
-            let evictedRecords = records.suffix(records.count - maximumRecordCount)
-            evictedRecords.forEach(deleteAudio)
+            evictedRecords = records.suffix(records.count - maximumRecordCount)
             records.removeLast(evictedRecords.count)
+        } else {
+            evictedRecords = []
         }
-        save()
+        do {
+            try save()
+        } catch {
+            records = previousRecords
+            lastError = "Dictation history could not be saved: \(error.localizedDescription)"
+            throw error
+        }
+
+        lastError = nil
+        for record in evictedRecords {
+            do {
+                try deleteAudio(for: record)
+            } catch {
+                lastError = "An old dictation recording could not be removed: \(error.localizedDescription)"
+                break
+            }
+        }
     }
 
     func delete(_ record: DictationRecord) {
-        deleteAudio(for: record)
+        let previousRecords = records
         records.removeAll { $0.id == record.id }
-        save()
+        do {
+            try save()
+        } catch {
+            records = previousRecords
+            lastError = "The dictation could not be deleted: \(error.localizedDescription)"
+            return
+        }
+
+        do {
+            try deleteAudio(for: record)
+            lastError = nil
+        } catch {
+            lastError = "The dictation was deleted, but its recording could not be removed: \(error.localizedDescription)"
+        }
     }
 
     func deleteAll() {
+        let previousRecords = records
         records.removeAll()
-        try? fileManager.removeItem(at: audioDirectory)
-        try? fileManager.removeItem(at: fileURL)
+        do {
+            if fileManager.fileExists(atPath: fileURL.path) {
+                try fileManager.removeItem(at: fileURL)
+            }
+        } catch {
+            records = previousRecords
+            lastError = "Dictation history could not be deleted: \(error.localizedDescription)"
+            return
+        }
+
+        do {
+            if fileManager.fileExists(atPath: audioDirectory.path) {
+                try fileManager.removeItem(at: audioDirectory)
+            }
+            lastError = nil
+        } catch {
+            lastError = "Dictation history was deleted, but some recordings could not be removed: \(error.localizedDescription)"
+        }
     }
 
-    func newAudioURL() -> URL {
-        try? fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+    func newAudioURL() throws -> URL {
+        try fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
         return audioDirectory.appending(path: "\(UUID().uuidString).caf")
     }
 
@@ -70,21 +123,24 @@ final class HistoryStore: ObservableObject {
         }
     }
 
-    private func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? decoder.decode([DictationRecord].self, from: data) else { return }
+    private func load() throws {
+        guard fileManager.fileExists(atPath: fileURL.path) else { return }
+        let data = try Data(contentsOf: fileURL)
+        let decoded = try decoder.decode([DictationRecord].self, from: data)
         records = decoded.sorted { $0.createdAt > $1.createdAt }
     }
 
-    private func save() {
-        guard let data = try? encoder.encode(records) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+    private func save() throws {
+        let data = try encoder.encode(records)
+        try data.write(to: fileURL, options: .atomic)
     }
 
-    private func deleteAudio(for record: DictationRecord) {
+    private func deleteAudio(for record: DictationRecord) throws {
         guard let audioPath = record.audioPath else { return }
         let url = URL(filePath: audioPath).standardizedFileURL
         guard url.deletingLastPathComponent() == audioDirectory.standardizedFileURL else { return }
-        try? fileManager.removeItem(at: url)
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
     }
 }

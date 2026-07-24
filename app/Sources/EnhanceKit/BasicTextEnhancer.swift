@@ -60,7 +60,8 @@ struct PauseAwarePunctuation {
             }
 
             let boundary = punctuation[index] ?? token.trailingPunctuation
-            capitalizeNext = boundary.map(isSentenceTerminal) ?? false
+            capitalizeNext = (boundary.map(isSentenceTerminal) ?? false)
+                && !isAbbreviationEnding(at: index, tokens: target, source: source)
             if !capitalizeNext, index + 1 < target.count {
                 let gapStart = NSMaxRange(token.range)
                 let gapEnd = target[index + 1].range.location
@@ -98,7 +99,14 @@ struct PauseAwarePunctuation {
             let trailingSilence = audioDuration - timings[timingIndex].endTime
             if trailingSilence >= 0, trailingSilence < 0.38 { return "…" }
         }
-        if let existing { return existing }
+        if let existing {
+            if let targetPunctuation,
+               targetPunctuation.contains(where: { "!?…".contains($0) }),
+               !existing.contains(where: { "!?…".contains($0) }) {
+                return targetPunctuation
+            }
+            return existing
+        }
         guard guideIndex + 1 < guide.count,
               let timingIndex = timingIndices[guideIndex],
               let nextTimingIndex = timingIndices[guideIndex + 1],
@@ -184,6 +192,26 @@ struct PauseAwarePunctuation {
 
     private static func isSentenceTerminal(_ punctuation: String) -> Bool {
         punctuation.contains { ".!?…".contains($0) }
+    }
+
+    private static func isAbbreviationEnding(
+        at index: Int,
+        tokens: [Token],
+        source: NSString
+    ) -> Bool {
+        let common: Set<String> = [
+            "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "fig", "dept", "inc"
+        ]
+        if common.contains(tokens[index].normalized) { return true }
+        guard tokens[index].word.count == 1, index > 0, tokens[index - 1].word.count == 1 else {
+            return false
+        }
+        let gapStart = NSMaxRange(tokens[index - 1].range)
+        let gapEnd = tokens[index].range.location
+        guard gapEnd > gapStart else { return false }
+        return source.substring(
+            with: NSRange(location: gapStart, length: gapEnd - gapStart)
+        ).contains(".")
     }
 
     private static func tokens(in text: String) -> [Token] {
@@ -335,7 +363,7 @@ struct BasicTextEnhancer: Sendable {
         text = text.replacingOccurrences(of: #"\bu\b"#, with: "you", options: [.regularExpression, .caseInsensitive])
         text = text.replacingOccurrences(of: #"\s+([,.;:!?])"#, with: "$1", options: .regularExpression)
         text = text.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
-        text = text.replacingOccurrences(of: #"\s*\n\s*"#, with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
 
         for (heard, correction) in learnedCorrections.sorted(by: { $0.key.count > $1.key.count }) {
             guard !heard.isEmpty, !correction.isEmpty else { continue }
@@ -584,11 +612,13 @@ struct CorrectionLearner: Sendable {
             }
             replacements[heard] = correction
         }
-        let vocabulary = added.filter { word in
+        let vocabularyCandidates = removed.isEmpty ? [added.joined(separator: " ")] : added
+        let vocabulary = vocabularyCandidates.filter { word in
             let normalized = word.lowercased()
             return word.count >= 2
-                && word.allSatisfy { $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" }
+                && word.allSatisfy { $0.isLetter || $0.isWhitespace || $0 == "'" || $0 == "’" || $0 == "-" }
                 && !Self.commonWords.contains(normalized)
+                && word != normalized
         }
         guard !replacements.isEmpty || !vocabulary.isEmpty else { return nil }
         return CorrectionLearningResult(replacements: replacements, vocabulary: vocabulary)

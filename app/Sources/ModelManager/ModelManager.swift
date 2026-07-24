@@ -51,6 +51,7 @@ final class ModelManager: ObservableObject {
     private let markerName = "installation.json"
     private var installTask: Task<Void, Never>?
     private var activeDownload: ResumableFileDownload?
+    private var installationID: UUID?
 
     init(fileManager: FileManager = .default, modelsRoot: URL? = nil) {
         let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -70,17 +71,33 @@ final class ModelManager: ObservableObject {
 
     func startAutomaticInstallation() {
         guard installTask == nil, state != .installed else { return }
+        beginInstallation(waitingFor: nil)
+    }
+
+    private func beginInstallation(waitingFor previousTask: Task<Void, Never>?) {
+        let id = UUID()
+        installationID = id
         installTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                try await install()
-            } catch is CancellationError {
+            await previousTask?.value
+            guard self.installationID == id else { return }
+            guard !Task.isCancelled else {
                 state = .paused
-            } catch {
-                state = .failed(error.localizedDescription)
+                installTask = nil
+                activeDownload = nil
+                return
             }
-            installTask = nil
-            activeDownload = nil
+            do {
+                try await install(id: id)
+            } catch is CancellationError {
+                if self.installationID == id { state = .paused }
+            } catch {
+                if self.installationID == id { state = .failed(error.localizedDescription) }
+            }
+            if self.installationID == id {
+                installTask = nil
+                activeDownload = nil
+            }
         }
     }
 
@@ -90,10 +107,11 @@ final class ModelManager: ObservableObject {
     }
 
     func retryInstallation() {
-        pauseInstallation()
-        installTask = nil
-        activeDownload = nil
-        startAutomaticInstallation()
+        guard state != .installed else { return }
+        let previousTask = installTask
+        previousTask?.cancel()
+        activeDownload?.cancel()
+        beginInstallation(waitingFor: previousTask)
     }
 
     func revealModelDirectory() {
@@ -102,15 +120,19 @@ final class ModelManager: ObservableObject {
     }
 
     func removeInstallation() async {
-        pauseInstallation()
-        await installTask?.value
+        let previousTask = installTask
+        previousTask?.cancel()
+        activeDownload?.cancel()
+        installationID = nil
+        await previousTask?.value
         installTask = nil
         activeDownload = nil
         try? FileManager.default.removeItem(at: modelDirectory)
         state = .idle
     }
 
-    private func install() async throws {
+    private func install(id: UUID) async throws {
+        guard installationID == id else { throw CancellationError() }
         state = .checking
         try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
 
@@ -140,7 +162,7 @@ final class ModelManager: ObservableObject {
                 resumeDataURL: resumeURL
             ) { [weak self] fileProgress in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.installationID == id else { return }
                     let received = Int64(Double(file.size) * fileProgress)
                     let overall = Double(completedBeforeDownload + received) / Double(totalSize)
                     self.state = .downloading(
@@ -157,7 +179,9 @@ final class ModelManager: ObservableObject {
             }
             activeDownload = nil
 
+            guard installationID == id else { throw CancellationError() }
             let verified = try await verify(file, at: destination)
+            guard installationID == id else { throw CancellationError() }
             guard verified else {
                 try? FileManager.default.removeItem(at: destination)
                 throw ModelManagerError.integrityCheckFailed(file.path)
@@ -166,6 +190,7 @@ final class ModelManager: ObservableObject {
             state = .verifying(progress: Double(completedSize) / Double(totalSize))
         }
 
+        guard installationID == id else { throw CancellationError() }
         let installedFiles = try Dictionary(uniqueKeysWithValues: manifest.map { file in
             let hash = try file.sha256 ?? Self.sha256(
                 of: modelDirectory.appending(path: file.path)
@@ -185,7 +210,7 @@ final class ModelManager: ObservableObject {
             to: modelDirectory.appending(path: markerName),
             options: .atomic
         )
-        state = .installed
+        if installationID == id { state = .installed }
     }
 
     private func fetchManifest() async throws -> [ModelFile] {

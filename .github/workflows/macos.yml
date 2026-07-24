@@ -20,4 +20,11 @@ jobs:
         working-directory: app
         run: >-
           xcodebuild -project AirScribe.xcodeproj -scheme AirScribe
-          -configuration Debug CODE_SIGNING_ALLOWED=NO test
+          -configuration Debug -destination 'platform=macOS,arch=arm64'
+          CODE_SIGNING_ALLOWED=NO test
+      - name: Verify Release build
+        working-directory: app
+        run: >-
+          xcodebuild -project AirScribe.xcodeproj -scheme AirScribe
+          -configuration Release -destination 'platform=macOS,arch=arm64'
+          ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build

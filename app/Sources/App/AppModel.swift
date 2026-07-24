@@ -43,6 +43,7 @@ final class AppModel: ObservableObject {
             if !learnFromCorrections {
                 correctionLearningTasks.values.forEach { $0.cancel() }
                 correctionLearningTasks = [:]
+                correctionLearningTaskOrder = []
             }
         }
     }
@@ -133,6 +134,7 @@ final class AppModel: ObservableObject {
     private var applicationObservation: AnyCancellable?
     private var permissionObservation: AnyCancellable?
     private var correctionLearningTasks: [UUID: Task<Void, Never>] = [:]
+    private var correctionLearningTaskOrder: [UUID] = []
     private var learningFeedbackTask: Task<Void, Never>?
     private var activeContext: ContextSnapshot = .empty
 
@@ -366,7 +368,7 @@ final class AppModel: ObservableObject {
             }
             createdSession = session
             activeSession = session
-            let audioURL = history.newAudioURL()
+            let audioURL = try history.newAudioURL()
             activeAudioURL = audioURL
             try microphone.start(
                 targetFormat: session.requiredAudioFormat,
@@ -397,7 +399,10 @@ final class AppModel: ObservableObject {
             if phase == .listening { phase = .idle }
             return
         }
-        microphone.stop()
+        let audioRecordingError = microphone.stop()
+        if audioRecordingError != nil {
+            removeActiveAudio()
+        }
         phase = .processing
         activeSession = nil
 
@@ -443,7 +448,7 @@ final class AppModel: ObservableObject {
             if requiresPolishedInsertion {
                 initialInsertion = nil
             } else {
-                initialInsertion = try textInserter.insert(immediateText)
+                initialInsertion = try await textInserter.insert(immediateText)
             }
             let insertionHandle = initialInsertion?.handle
             var copiedToClipboard = initialInsertion?.wasCopiedToClipboard ?? false
@@ -492,7 +497,7 @@ final class AppModel: ObservableObject {
             var insertedText = immediateText
             var finalInsertionHandle = insertionHandle
             if requiresPolishedInsertion {
-                let result = try textInserter.insert(enhanced)
+                let result = try await textInserter.insert(enhanced)
                 finalInsertionHandle = result.handle
                 copiedToClipboard = result.wasCopiedToClipboard
                 insertedText = enhanced
@@ -514,7 +519,7 @@ final class AppModel: ObservableObject {
                 return Int(components.seconds * 1_000)
                     + Int(components.attoseconds / 1_000_000_000_000_000)
             } ?? 0
-            history.add(
+            try history.add(
                 DictationRecord(
                     rawText: raw,
                     enhancedText: insertedText,
@@ -538,11 +543,23 @@ final class AppModel: ObservableObject {
             if copiedToClipboard {
                 phase = .copied
                 try? await Task.sleep(for: .milliseconds(1_500))
-                if phase == .copied { phase = .idle }
+                if phase == .copied {
+                    if let audioRecordingError {
+                        phase = .error("Text was copied, but its recording could not be saved: \(audioRecordingError.localizedDescription)")
+                    } else {
+                        phase = .idle
+                    }
+                }
             } else {
                 phase = .done
                 try? await Task.sleep(for: .milliseconds(650))
-                if phase == .done { phase = .idle }
+                if phase == .done {
+                    if let audioRecordingError {
+                        phase = .error("Text was inserted, but its recording could not be saved: \(audioRecordingError.localizedDescription)")
+                    } else {
+                        phase = .idle
+                    }
+                }
             }
         } catch {
             removeActiveAudio()
@@ -588,13 +605,19 @@ final class AppModel: ObservableObject {
 
     private func observeCorrection(to handle: TextInserter.InsertionHandle) {
         if correctionLearningTasks.count >= 4,
-           let oldestID = correctionLearningTasks.keys.first {
+           let oldestID = correctionLearningTaskOrder.first {
             correctionLearningTasks.removeValue(forKey: oldestID)?.cancel()
+            correctionLearningTaskOrder.removeAll { $0 == oldestID }
         }
         correctionLearningTasks[handle.id]?.cancel()
+        correctionLearningTaskOrder.removeAll { $0 == handle.id }
+        correctionLearningTaskOrder.append(handle.id)
         correctionLearningTasks[handle.id] = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.correctionLearningTasks[handle.id] = nil }
+            defer {
+                self.correctionLearningTasks[handle.id] = nil
+                self.correctionLearningTaskOrder.removeAll { $0 == handle.id }
+            }
             var lastObserved: String?
             var stableObservations = 0
             // Keep a small number of independent observations alive so starting a
@@ -752,6 +775,7 @@ final class AppModel: ObservableObject {
         learnFromCorrections = true
         correctionLearningTasks.values.forEach { $0.cancel() }
         correctionLearningTasks = [:]
+        correctionLearningTaskOrder = []
         learningFeedbackTask?.cancel()
         learningFeedbackTask = nil
         learnedCorrections = [:]

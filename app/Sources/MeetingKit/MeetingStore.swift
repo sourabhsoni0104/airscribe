@@ -69,6 +69,7 @@ struct MeetingRecord: Identifiable, Codable, Sendable {
 @MainActor
 final class MeetingStore: ObservableObject {
     @Published private(set) var records: [MeetingRecord] = []
+    @Published private(set) var lastError: String?
 
     let audioDirectory: URL
     private let recordsURL: URL
@@ -81,39 +82,88 @@ final class MeetingStore: ObservableObject {
                 .appending(path: "AirScribe", directoryHint: .isDirectory)
         audioDirectory = root.appending(path: "MeetingAudio", directoryHint: .isDirectory)
         recordsURL = root.appending(path: "meetings.json")
-        try? fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
-        load()
+        do {
+            try fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+            try load()
+        } catch {
+            lastError = "Meeting history could not be loaded: \(error.localizedDescription)"
+        }
     }
 
-    func newAudioURL(source: MeetingSpeaker) -> URL {
-        try? fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+    func newAudioURL(source: MeetingSpeaker) throws -> URL {
+        try fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
         return audioDirectory.appending(path: "\(UUID().uuidString)-\(source.rawValue.lowercased()).caf")
     }
 
-    func add(_ record: MeetingRecord) {
+    func add(_ record: MeetingRecord) throws {
+        let previousRecords = records
         records.insert(record, at: 0)
-        save()
+        do {
+            try save()
+            lastError = nil
+        } catch {
+            records = previousRecords
+            lastError = "The meeting could not be saved: \(error.localizedDescription)"
+            throw error
+        }
     }
 
     func updateTitle(for recordID: UUID, title: String) {
         guard let index = records.firstIndex(where: { $0.id == recordID }) else { return }
         let cleaned = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
+        let previousTitle = records[index].title
         records[index].title = cleaned
-        save()
+        do {
+            try save()
+            lastError = nil
+        } catch {
+            records[index].title = previousTitle
+            lastError = "The meeting title could not be saved: \(error.localizedDescription)"
+        }
     }
 
     func delete(_ record: MeetingRecord) {
-        deleteManagedAudio(at: record.microphoneAudioPath)
-        deleteManagedAudio(at: record.systemAudioPath)
+        let previousRecords = records
         records.removeAll { $0.id == record.id }
-        save()
+        do {
+            try save()
+        } catch {
+            records = previousRecords
+            lastError = "The meeting could not be deleted: \(error.localizedDescription)"
+            return
+        }
+
+        do {
+            try deleteManagedAudio(at: record.microphoneAudioPath)
+            try deleteManagedAudio(at: record.systemAudioPath)
+            lastError = nil
+        } catch {
+            lastError = "The meeting was deleted, but some audio could not be removed: \(error.localizedDescription)"
+        }
     }
 
     func deleteAll() {
+        let previousRecords = records
         records.removeAll()
-        try? fileManager.removeItem(at: audioDirectory)
-        try? fileManager.removeItem(at: recordsURL)
+        do {
+            if fileManager.fileExists(atPath: recordsURL.path) {
+                try fileManager.removeItem(at: recordsURL)
+            }
+        } catch {
+            records = previousRecords
+            lastError = "Meeting history could not be deleted: \(error.localizedDescription)"
+            return
+        }
+
+        do {
+            if fileManager.fileExists(atPath: audioDirectory.path) {
+                try fileManager.removeItem(at: audioDirectory)
+            }
+            lastError = nil
+        } catch {
+            lastError = "Meeting history was deleted, but some audio could not be removed: \(error.localizedDescription)"
+        }
     }
 
     func export(_ record: MeetingRecord, format: MeetingExportFormat) {
@@ -121,27 +171,35 @@ final class MeetingStore: ObservableObject {
         panel.allowedContentTypes = [format.contentType]
         panel.nameFieldStringValue = sanitized(record.title) + "." + format.fileExtension
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? format.render(record).write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try format.render(record).write(to: url, atomically: true, encoding: .utf8)
+            lastError = nil
+        } catch {
+            lastError = "The meeting export failed: \(error.localizedDescription)"
+        }
     }
 
-    private func load() {
-        guard let data = try? Data(contentsOf: recordsURL),
-              let decoded = try? JSONDecoder().decode([MeetingRecord].self, from: data) else { return }
+    private func load() throws {
+        guard fileManager.fileExists(atPath: recordsURL.path) else { return }
+        let data = try Data(contentsOf: recordsURL)
+        let decoded = try JSONDecoder().decode([MeetingRecord].self, from: data)
         records = decoded.sorted { $0.startedAt > $1.startedAt }
     }
 
-    private func save() {
-        guard let data = try? JSONEncoder().encode(records) else { return }
-        try? fileManager.createDirectory(at: recordsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: recordsURL, options: .atomic)
+    private func save() throws {
+        let data = try JSONEncoder().encode(records)
+        try fileManager.createDirectory(at: recordsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: recordsURL, options: .atomic)
     }
 
-    private func deleteManagedAudio(at path: String?) {
+    private func deleteManagedAudio(at path: String?) throws {
         guard let path else { return }
         let url = URL(filePath: path).standardizedFileURL
         let root = audioDirectory.standardizedFileURL.path + "/"
         guard url.path.hasPrefix(root) else { return }
-        try? fileManager.removeItem(at: url)
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
     }
 
     private func sanitized(_ value: String) -> String {

@@ -26,17 +26,19 @@ final class MilestoneSixTests: XCTestCase {
         XCTAssertNil(relaunchedStore.interruptedSession)
     }
 
-    func testLanguagePackDetectsVerifiedMarkerAndCanRemoveIt() throws {
+    func testLanguagePackDetectsVerifiedMarkerAndCanRemoveIt() async throws {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "AirScribeTests-LanguagePack-\(UUID().uuidString)", directoryHint: .isDirectory)
         let pack = root.appending(path: "extended-language-pack", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: pack, withIntermediateDirectories: true)
-        try Data("ready".utf8).write(to: pack.appending(path: ".airscribe-ready"))
+        try Data("data".utf8).write(to: pack.appending(path: "model.bin"))
+        try Data(#"{"files":{"model.bin":4}}"#.utf8)
+            .write(to: pack.appending(path: ".airscribe-ready"))
         defer { try? FileManager.default.removeItem(at: root) }
 
         let manager = LanguagePackManager(modelsRoot: root)
         XCTAssertEqual(manager.state, .installed)
-        manager.remove()
+        await manager.removeAndWait()
         XCTAssertEqual(manager.state, .notInstalled)
         XCTAssertFalse(FileManager.default.fileExists(atPath: pack.path))
     }

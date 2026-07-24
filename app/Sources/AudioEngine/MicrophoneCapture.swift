@@ -16,6 +16,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private var recordingFile: AVAudioFile?
+    private var recordingError: Error?
     private var isRunning = false
 
     var naturalFormat: AVAudioFormat {
@@ -31,6 +32,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard !isRunning else { return }
+        recordingError = nil
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
@@ -53,9 +55,19 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
 
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
-            guard let self, let converted = self.convert(buffer) else { return }
+            guard let self else { return }
+            let converted: AVAudioPCMBuffer? = self.lock.withLock {
+                guard self.isRunning else { return nil }
+                guard let converted = self.convert(buffer) else { return nil }
+                do {
+                    try self.recordingFile?.write(from: converted)
+                } catch {
+                    if self.recordingError == nil { self.recordingError = error }
+                }
+                return converted
+            }
+            guard let converted else { return }
             onLevel(Self.rootMeanSquareLevel(buffer))
-            try? self.recordingFile?.write(from: converted)
             onBuffer(converted)
         }
 
@@ -72,16 +84,25 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
     }
 
-    func stop() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard isRunning else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        converter = nil
-        targetFormat = nil
-        recordingFile = nil
-        isRunning = false
+    @discardableResult
+    func stop() -> Error? {
+        let wasRunning = lock.withLock {
+            let value = isRunning
+            isRunning = false
+            return value
+        }
+        if wasRunning {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        return lock.withLock {
+            let error = recordingError
+            converter = nil
+            targetFormat = nil
+            recordingFile = nil
+            recordingError = nil
+            return error
+        }
     }
 
     private func convert(_ input: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

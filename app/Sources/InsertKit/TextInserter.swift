@@ -44,7 +44,7 @@ struct TextInserter: Sendable {
 
     @MainActor
     @discardableResult
-    func insert(_ text: String) throws -> InsertionResult {
+    func insert(_ text: String) async throws -> InsertionResult {
         // Clipboard fallback must remain available even when macOS has stale or
         // missing Accessibility authorization. Direct insertion still requires it.
         guard !SecureInputGuard.isSecure(nil) else { throw AirScribeError.secureInputActive }
@@ -85,11 +85,29 @@ struct TextInserter: Sendable {
             selection: selection,
             boundaries: boundaries
         )
+        let handle = InsertionHandle(
+            id: UUID(),
+            element: element,
+            processIdentifier: processIdentifier,
+            insertionLocation: insertionLocation,
+            insertedText: text,
+            prefix: boundaries?.0,
+            suffix: boundaries?.1,
+            beforeAnchor: anchors.before,
+            afterAnchor: anchors.after,
+            unaffectedCharacterCount: originalCharacterCount.map {
+                max(0, $0 - (selection?.length ?? 0))
+            }
+        )
 
         let pasteboard = NSPasteboard.general
         let snapshot = snapshotPasteboard(pasteboard)
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        guard pasteboard.setString(text, forType: .string),
+              pasteboard.string(forType: .string) == text else {
+            restorePasteboard(snapshot, to: pasteboard)
+            throw AirScribeError.clipboardCopyFailed
+        }
         let insertionChangeCount = pasteboard.changeCount
 
         guard let source = CGEventSource(stateID: .hidSystemState),
@@ -104,27 +122,22 @@ struct TextInserter: Sendable {
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
 
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(180))
-            // Do not overwrite a clipboard change the user made while insertion was in flight.
-            if pasteboard.changeCount == insertionChangeCount {
-                restorePasteboard(snapshot, to: pasteboard)
+        // Accessibility updates arrive at different speeds in native and web
+        // editors. Only report "Inserted" after observing the new text.
+        for delay in [70, 100, 140, 190] {
+            try? await Task.sleep(for: .milliseconds(delay))
+            if insertionWasObserved(handle) {
+                if pasteboard.changeCount == insertionChangeCount {
+                    restorePasteboard(snapshot, to: pasteboard)
+                }
+                return .inserted(handle)
             }
         }
-        return .inserted(InsertionHandle(
-            id: UUID(),
-            element: element,
-            processIdentifier: processIdentifier,
-            insertionLocation: insertionLocation,
-            insertedText: text,
-            prefix: boundaries?.0,
-            suffix: boundaries?.1,
-            beforeAnchor: anchors.before,
-            afterAnchor: anchors.after,
-            unaffectedCharacterCount: originalCharacterCount.map {
-                max(0, $0 - (selection?.length ?? 0))
-            }
-        ))
+
+        // If insertion cannot be verified, leave the actual transcript on the
+        // clipboard and report the safe fallback instead of a false success.
+        try copyToClipboard(text)
+        return .copiedToClipboard
     }
 
     @MainActor
@@ -236,6 +249,28 @@ struct TextInserter: Sendable {
             return nil
         }
         return observed == handle.insertedText ? nil : observed
+    }
+
+    @MainActor
+    private func insertionWasObserved(_ handle: InsertionHandle) -> Bool {
+        guard let element = handle.element,
+              let current = focusedElement(),
+              CFEqual(element, current) else { return false }
+        var processIdentifier: pid_t = 0
+        AXUIElementGetPid(current, &processIdentifier)
+        guard processIdentifier == handle.processIdentifier else { return false }
+
+        if let prefix = handle.prefix,
+           let suffix = handle.suffix,
+           let value = stringValue(of: current) {
+            return value == prefix + handle.insertedText + suffix
+        }
+        if let unaffectedCharacterCount = handle.unaffectedCharacterCount,
+           let currentCharacterCount = characterCount(of: current) {
+            return currentCharacterCount
+                == unaffectedCharacterCount + (handle.insertedText as NSString).length
+        }
+        return false
     }
 
     static func textBetweenAnchors(

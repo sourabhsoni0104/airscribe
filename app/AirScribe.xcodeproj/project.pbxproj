@@ -608,6 +608,7 @@
 		A94E5A718B4B8612BEA60FE4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Config/AirScribe.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -621,6 +622,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0.0;
+				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.airscribe.mac;
 				PRODUCT_NAME = AirScribe;
 				SDKROOT = macosx;
@@ -630,6 +632,7 @@
 		DADB8CE136FF582DFD785378 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Config/AirScribe.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -643,6 +646,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0.0;
+				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.airscribe.mac;
 				PRODUCT_NAME = AirScribe;
 				SDKROOT = macosx;

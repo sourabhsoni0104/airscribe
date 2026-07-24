@@ -24,6 +24,7 @@ xcodebuild \
   DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM}" \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="${SIGNING_IDENTITY}" \
+  ARCHS=arm64 \
   OTHER_CODE_SIGN_FLAGS=--timestamp \
   archive
 xcodebuild \

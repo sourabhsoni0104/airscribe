@@ -35,15 +35,15 @@ final class HistoryStoreTests: XCTestCase {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = HistoryStore(applicationSupportRoot: root)
-        let managedAudio = store.newAudioURL()
+        let managedAudio = try store.newAudioURL()
         try Data([1, 2, 3]).write(to: managedAudio)
         let outsideAudio = root.appending(path: "keep.caf")
         try Data([4, 5, 6]).write(to: outsideAudio)
 
         let managedRecord = makeRecord(audioPath: managedAudio.path)
         let outsideRecord = makeRecord(audioPath: outsideAudio.path)
-        store.add(outsideRecord)
-        store.add(managedRecord)
+        try store.add(outsideRecord)
+        try store.add(managedRecord)
         store.delete(managedRecord)
         store.delete(outsideRecord)
 
@@ -52,11 +52,11 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(store.records.isEmpty)
     }
 
-    func testSearchMatchesRawAndEnhancedText() {
+    func testSearchMatchesRawAndEnhancedText() throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = HistoryStore(applicationSupportRoot: root)
-        store.add(makeRecord(raw: "private speech models", enhanced: "AirScribe Models"))
+        try store.add(makeRecord(raw: "private speech models", enhanced: "AirScribe Models"))
 
         XCTAssertEqual(store.search("speech").count, 1)
         XCTAssertEqual(store.search("AIRSCRIBE MODELS").count, 1)
@@ -67,11 +67,11 @@ final class HistoryStoreTests: XCTestCase {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = HistoryStore(applicationSupportRoot: root, maximumRecordCount: 1)
-        let oldAudio = store.newAudioURL()
+        let oldAudio = try store.newAudioURL()
         try Data([1, 2, 3]).write(to: oldAudio)
 
-        store.add(makeRecord(raw: "old", audioPath: oldAudio.path))
-        store.add(makeRecord(raw: "new"))
+        try store.add(makeRecord(raw: "old", audioPath: oldAudio.path))
+        try store.add(makeRecord(raw: "new"))
 
         XCTAssertEqual(store.records.map(\.rawText), ["new"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: oldAudio.path))
@@ -81,7 +81,7 @@ final class HistoryStoreTests: XCTestCase {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = HistoryStore(applicationSupportRoot: root)
-        let orphanedAudio = store.newAudioURL()
+        let orphanedAudio = try store.newAudioURL()
         try Data([1, 2, 3]).write(to: orphanedAudio)
 
         store.deleteAll()

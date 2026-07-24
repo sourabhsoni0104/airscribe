@@ -57,6 +57,20 @@ private struct MeetingView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let error = store.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+                    .padding(.bottom, 6)
+            }
+            if let warning = coordinator.lastWarning {
+                Text(warning)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal)
+                    .padding(.bottom, 6)
+            }
             Divider()
             HSplitView {
                 historySidebar

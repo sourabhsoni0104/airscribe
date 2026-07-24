@@ -18,6 +18,7 @@ final class MeetingCoordinator: ObservableObject {
     @Published private(set) var elapsedSeconds: Int = 0
     @Published private(set) var microphoneLevel: Float = 0
     @Published private(set) var systemAudioStatus = "System audio ready"
+    @Published private(set) var lastWarning: String?
     @Published private(set) var latestRecord: MeetingRecord?
 
     let store = MeetingStore()
@@ -78,8 +79,8 @@ final class MeetingCoordinator: ObservableObject {
             self.microphoneSession = microphoneSession
             self.systemSession = systemSession
 
-            let microphoneURL = store.newAudioURL(source: .you)
-            let systemURL = store.newAudioURL(source: .computer)
+            let microphoneURL = try store.newAudioURL(source: .you)
+            let systemURL = try store.newAudioURL(source: .computer)
             self.microphoneURL = microphoneURL
             self.systemURL = systemURL
             let writer = try LockedAudioFileWriter(url: systemURL, format: systemSession.requiredAudioFormat)
@@ -124,7 +125,7 @@ final class MeetingCoordinator: ObservableObject {
             state = .recording
             startElapsedTimer()
         } catch {
-            stopCaptureHardware()
+            _ = stopCaptureHardware()
             let microphoneSession = self.microphoneSession
             let systemSession = self.systemSession
             self.microphoneSession = nil
@@ -142,7 +143,10 @@ final class MeetingCoordinator: ObservableObject {
         state = .processing
         elapsedTask?.cancel()
         elapsedTask = nil
-        stopCaptureHardware()
+        let audioRecordingError = stopCaptureHardware()
+        if audioRecordingError != nil {
+            removeUnfinishedFiles()
+        }
 
         let microphoneSession = self.microphoneSession
         let systemSession = self.systemSession
@@ -207,11 +211,16 @@ final class MeetingCoordinator: ObservableObject {
                 microphoneAudioPath: microphoneURL?.path,
                 systemAudioPath: systemURL?.path
             )
-            store.add(record)
+            try store.add(record)
             latestRecord = record
             liveTranscript = transcript
+            microphoneURL = nil
+            systemURL = nil
             recovery.complete()
             state = .complete
+            if let audioRecordingError {
+                lastWarning = "The transcript was saved, but meeting audio could not be written: \(audioRecordingError.localizedDescription)"
+            }
         } catch {
             removeUnfinishedFiles()
             recovery.complete()
@@ -263,6 +272,10 @@ final class MeetingCoordinator: ObservableObject {
     }
 
     private func resetCaptureState() {
+        // Completed meeting audio belongs to its stored record. Clear those
+        // references before startup so a later failure cannot delete it.
+        microphoneURL = nil
+        systemURL = nil
         liveTranscript = ""
         microphonePartial = ""
         systemPartial = ""
@@ -270,6 +283,7 @@ final class MeetingCoordinator: ObservableObject {
         microphoneLevel = 0
         latestRecord = nil
         systemAudioStatus = "System audio ready"
+        lastWarning = nil
     }
 
     private func startElapsedTimer() {
@@ -283,10 +297,13 @@ final class MeetingCoordinator: ObservableObject {
         }
     }
 
-    private func stopCaptureHardware() {
-        microphone.stop()
+    @discardableResult
+    private func stopCaptureHardware() -> Error? {
+        let microphoneError = microphone.stop()
         systemAudio.stop()
+        let systemError = systemWriter?.writeError
         systemWriter = nil
+        return microphoneError ?? systemError
     }
 
     private func removeUnfinishedFiles() {
@@ -320,6 +337,11 @@ final class MeetingCoordinator: ObservableObject {
 private final class LockedAudioFileWriter: @unchecked Sendable {
     private let lock = NSLock()
     private let file: AVAudioFile
+    private var storedWriteError: Error?
+
+    var writeError: Error? {
+        lock.withLock { storedWriteError }
+    }
 
     init(url: URL, format: AVAudioFormat) throws {
         file = try AVAudioFile(
@@ -331,7 +353,13 @@ private final class LockedAudioFileWriter: @unchecked Sendable {
     }
 
     func write(_ buffer: AVAudioPCMBuffer) {
-        lock.withLock { try? file.write(from: buffer) }
+        lock.withLock {
+            do {
+                try file.write(from: buffer)
+            } catch {
+                if storedWriteError == nil { storedWriteError = error }
+            }
+        }
     }
 }
 

@@ -107,24 +107,29 @@ final class ControlHotkeyMonitor: NSObject {
             CGEvent.tapEnable(tap: tap, enable: true)
         }
 
-        let mask: NSEvent.EventTypeMask = [.flagsChanged]
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            Task { @MainActor [weak self] in self?.handle(event) }
-        }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            MainActor.assumeIsolated { self?.handle(event) }
-            return event
-        }
+        // Prefer a single event source. Feeding one fast modifier transition
+        // through the event tap, NSEvent monitor, and polling loop can reorder a
+        // double press and cancel hands-free mode.
+        if eventTap == nil {
+            let mask: NSEvent.EventTypeMask = [.flagsChanged]
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+                Task { @MainActor [weak self] in self?.handle(event) }
+            }
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+                MainActor.assumeIsolated { self?.handle(event) }
+                return event
+            }
 
-        let pollingTimer = Timer(
-            timeInterval: 1.0 / 60.0,
-            target: self,
-            selector: #selector(pollControlState),
-            userInfo: nil,
-            repeats: true
-        )
-        RunLoop.main.add(pollingTimer, forMode: .common)
-        controlPollingTimer = pollingTimer
+            let pollingTimer = Timer(
+                timeInterval: 1.0 / 60.0,
+                target: self,
+                selector: #selector(pollControlState),
+                userInfo: nil,
+                repeats: true
+            )
+            RunLoop.main.add(pollingTimer, forMode: .common)
+            controlPollingTimer = pollingTimer
+        }
 
         guard eventTap != nil || globalMonitor != nil || controlPollingTimer != nil else {
             stop()
@@ -225,7 +230,8 @@ struct ControlHotkeyStateMachine {
     var controlIsDown = false
     var dictationIsActive = false
     var latched = false
-    let doubleTapInterval: TimeInterval = 0.35
+    // Leave enough time for an intentional modifier double press.
+    let doubleTapInterval: TimeInterval = 0.55
 
     mutating func handleControlTransition(isDown: Bool) -> Action? {
         if isDown, !controlIsDown {

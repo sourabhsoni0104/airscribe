@@ -69,6 +69,7 @@ final class BasicTextEnhancerTests: XCTestCase {
         )
 
         XCTAssertEqual(result?.replacements["textbook"], "text box")
+        XCTAssertEqual(result?.vocabulary, [])
         XCTAssertEqual(
             enhancer.enhance(
                 "select the textbook",
@@ -184,6 +185,13 @@ final class BasicTextEnhancerTests: XCTestCase {
             "Hi Alex, can we meet today? Thanks,"
         )
     }
+
+    func testFullEnhancerPreservesParagraphBreaks() {
+        XCTAssertEqual(
+            enhancer.enhance("first paragraph.\n\nsecond paragraph.", mode: .general),
+            "First paragraph.\n\nsecond paragraph."
+        )
+    }
 }
 
 final class PauseAwarePunctuationTests: XCTestCase {
@@ -256,6 +264,15 @@ final class PauseAwarePunctuationTests: XCTestCase {
             timings: []
         )
         XCTAssertEqual(result, "Wait—what?! Really?")
+    }
+
+    func testDoesNotCapitalizeAfterAbbreviations() {
+        let result = PauseAwarePunctuation.apply(
+            to: "we support e.g. examples and Dr. smith",
+            using: "We support e.g. examples and Dr. smith",
+            timings: []
+        )
+        XCTAssertEqual(result, "We support e.g. examples and Dr. smith")
     }
 
     func testLongPauseInfersQuestionBoundary() {

@@ -551,6 +551,11 @@ private struct HistorySettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+                if let error = store.lastError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
             .padding(.horizontal)
             .padding(.top)
@@ -628,7 +633,12 @@ private struct HistorySettingsView: View {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "AirScribe-\(record.id.uuidString.prefix(8)).txt"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? record.enhancedText.write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try record.enhancedText.write(to: url, atomically: true, encoding: .utf8)
+            audioMessage = ""
+        } catch {
+            audioMessage = "Export failed: \(error.localizedDescription)"
+        }
     }
 
     private func audioURL(for record: DictationRecord) -> URL? {

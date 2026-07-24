@@ -21,13 +21,13 @@ final class MeetingStoreTests: XCTestCase {
             .appending(path: "AirScribeMeetingTests-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = MeetingStore(applicationSupportRoot: root)
-        let managed = store.newAudioURL(source: .you)
+        let managed = try store.newAudioURL(source: .you)
         let outside = root.deletingLastPathComponent().appending(path: "outside-\(UUID().uuidString).caf")
         XCTAssertTrue(FileManager.default.createFile(atPath: managed.path, contents: Data("audio".utf8)))
         XCTAssertTrue(FileManager.default.createFile(atPath: outside.path, contents: Data("audio".utf8)))
 
         let original = sampleRecord(microphonePath: managed.path, systemPath: outside.path)
-        store.add(original)
+        try store.add(original)
         store.delete(original)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: managed.path))
