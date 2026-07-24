@@ -5,7 +5,7 @@ import Foundation
 /// A language model can return text that is shorter than the input for two very
 /// different reasons: it removed filler words, or its output was cut off by a
 /// token limit. The second case silently deletes the end of a dictation, so
-/// candidates that lose too much content — or that drop numbers — are rejected
+/// candidates that lose too much content, or that drop numbers, are rejected
 /// and the unpolished text is kept instead.
 enum PolishGuard {
     /// Polish may compress, but losing nearly half the words means the tail is

@@ -146,7 +146,7 @@ final class MeetingCoordinator: ObservableObject {
                 }
                 systemAudioStatus = "Waiting for Mac audio"
             } catch {
-                systemAudioStatus = "System audio unavailable — microphone-only recording"
+                systemAudioStatus = "System audio unavailable, microphone-only recording"
                 await systemSession.cancel()
                 self.systemSession = nil
                 systemWriter = nil
@@ -154,7 +154,7 @@ final class MeetingCoordinator: ObservableObject {
                     try FileManager.default.removeItem(at: systemURL)
                     self.systemURL = nil
                 } catch {
-                    systemAudioStatus = "System audio unavailable — cleanup pending"
+                    systemAudioStatus = "System audio unavailable, cleanup pending"
                 }
             }
 
@@ -390,7 +390,7 @@ final class MeetingCoordinator: ObservableObject {
     /// the meeting started with.
     ///
     /// `stop` cancels the elapsed-time task, so it must not be awaited from
-    /// inside that task — transcription and summarisation would inherit the
+    /// inside that task, because transcription and summarisation would inherit the
     /// cancellation and abandon the recording.
     private func beginAutoStop() {
         guard let parameters = autoStopParameters else { return }
@@ -446,7 +446,7 @@ final class MeetingCoordinator: ObservableObject {
     }
 
     private func defaultTitle(for date: Date) -> String {
-        "Meeting — " + date.formatted(date: .abbreviated, time: .shortened)
+        "Meeting " + date.formatted(date: .abbreviated, time: .shortened)
     }
 
     nonisolated private static func makeBuffer(samples: [Float], format: AVAudioFormat) -> AVAudioPCMBuffer? {

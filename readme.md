@@ -1,239 +1,193 @@
 # AirScribe
 
-Private, on-device voice dictation for Apple-silicon Macs. Hold Control, speak, release — cleaned text lands in the app you were already using.
+Voice dictation for Macs that runs entirely on your own machine. Hold Control, say what you want written, let go. The cleaned-up text appears wherever your cursor was.
 
-No account. No telemetry. No transcription server. Speech recognition, cleanup, translation, meeting summaries, and the inline assistant all run locally on your Mac.
+No account, no subscription, no server. Speech recognition, text cleanup, translation, meeting summaries, and the built-in assistant all run locally.
 
-- [Requirements](#requirements)
-- [Install](#install)
-- [First run](#first-run)
-- [How to use it](#how-to-use-it)
-- [Features](#features)
-- [Settings reference](#settings-reference)
-- [Where your data lives](#where-your-data-lives)
-- [Uninstall](#uninstall)
-- [Optional cloud polish (BYOK)](#optional-cloud-polish-byok)
-- [Build from source](#build-from-source)
-- [Troubleshooting](#troubleshooting)
+## Contents
+
+- [What you need](#what-you-need)
+- [Installing](#installing)
+- [First launch](#first-launch)
+- [Using it](#using-it)
+- [What it can do](#what-it-can-do)
+- [Settings](#settings)
+- [Where your files go](#where-your-files-go)
+- [Uninstalling](#uninstalling)
+- [Cloud polish, if you want it](#cloud-polish-if-you-want-it)
+- [Building it yourself](#building-it-yourself)
+- [When something goes wrong](#when-something-goes-wrong)
 - [License](#license)
 
-## Requirements
+## What you need
 
-| | |
-|---|---|
-| Mac | Apple silicon (M1 or newer). Intel Macs are not supported. |
-| macOS | 26.0 or newer |
-| Disk | ~2 GB free for the speech model, ~2.5 GB more if you install the 100+ language pack |
-| Network | Needed once, to download the speech model. Dictation works offline afterwards. |
-| Apple Intelligence | Optional. Enables deeper writing polish, translation, and meeting summaries. AirScribe works without it. |
+A Mac with Apple silicon (M1 or later) running macOS 26 or newer. Intel Macs won't work.
 
-## Install
+You'll want about 2 GB of free disk space for the speech model, plus another 2.5 GB if you later add the optional 100+ language pack. An internet connection is needed once, to fetch the model. After that, dictation works offline.
 
-### From a release build
+Apple Intelligence is optional. If you have it turned on, AirScribe can use it for deeper rewriting, translation, and meeting summaries. Everything else works without it.
 
-> If the Releases page has no builds yet, [build from source](#from-source) instead — it takes one command plus a Run in Xcode.
+## Installing
 
-1. Download `AirScribe-<version>.dmg` from the [Releases page](https://github.com/sourabhsoni0104/airscribe/releases).
-2. Double-click it. A window opens showing **AirScribe** next to your **Applications** folder.
+If the [Releases page](https://github.com/sourabhsoni0104/airscribe/releases) doesn't have a build yet, skip to [Building it yourself](#building-it-yourself).
+
+1. Download `AirScribe-1.0.0.dmg`.
+2. Open it. A window appears with AirScribe on the left and your Applications folder on the right.
 3. Drag AirScribe onto Applications.
-4. Eject the disk image, then launch AirScribe from Applications or Spotlight. Releases are signed with a Developer ID and notarized by Apple, so it opens normally.
+4. Eject the disk image and launch AirScribe from Applications or Spotlight.
 
-The app itself is a few tens of megabytes. It contains **no** speech models — those are downloaded on demand, on your machine, and can be removed at any time from Settings → Models & Languages.
+Released builds are signed with a Developer ID and notarized by Apple, so they open without any warnings. The app is about 43 MB. It contains no speech models; those get downloaded later, onto your machine, and you can delete them whenever you like.
 
-If macOS says the app "cannot be opened because the developer cannot be verified", you downloaded an unsigned build. Right-click the app, choose **Open**, then confirm — or remove the quarantine flag:
+If macOS complains that the developer can't be verified, you have an unsigned build. Right-click the app and pick Open, or clear the quarantine flag:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/AirScribe.app
 ```
 
-### Verify a download before trusting it
+To check a download before you trust it:
 
 ```sh
 codesign --verify --strict --verbose=2 /Applications/AirScribe.app
 spctl --assess --type execute --verbose=2 /Applications/AirScribe.app
 ```
 
-Both should report the bundle as accepted with a valid Developer ID signature.
+Both should come back accepted, with a valid Developer ID signature.
 
-### From source
+## First launch
 
-See [Build from source](#build-from-source).
+AirScribe lives in your menu bar. There's no Dock icon and no main window, so look for the waveform in the menu bar.
 
-## First run
+You'll be asked for two permissions. Onboarding walks you through both, and the Privacy pane in Settings always shows where you stand.
 
-AirScribe is a menu-bar app. It has no Dock icon and no main window — look for the waveform icon in your menu bar.
-
-**1. Grant two permissions.** Onboarding walks you through both, and the Privacy pane in Settings shows their live status.
-
-| Permission | Why it is needed | Where macOS asks |
-|---|---|---|
-| **Microphone** | To hear your dictation | System Settings → Privacy & Security → Microphone |
-| **Accessibility** | For the global hold-to-talk shortcut, and to insert text into other apps | System Settings → Privacy & Security → Accessibility |
-
-Screen Recording is requested **only** if you turn on screen-text context or record Mac audio in a meeting. Dictation never needs it.
-
-**2. Let the speech model download.** On first launch AirScribe fetches its on-device model (~713 MB, 6 files) from Hugging Face. Every file is pinned to an exact revision and verified against a SHA-256 hash before use. The download resumes if interrupted, and you can pause it from the menu bar or Settings → Models & Languages.
-
-Until the model finishes, AirScribe falls back to Apple's built-in speech recognition so dictation works immediately.
-
-**3. Optional: install the 100+ language pack** (~1.64 GB) from Settings → Models & Languages, for automatic language detection and mixed-language speech such as Hindi-English code-switching.
-
-## How to use it
-
-**Push to talk** — hold <kbd>Control</kbd>, speak, release. Text is cleaned and inserted where your cursor is.
-
-**Hands-free** — double-press <kbd>Control</kbd> to latch listening on. Press once more to stop.
-
-You can change the trigger to <kbd>Option</kbd>, <kbd>Command</kbd>, or <kbd>Fn</kbd> in Settings → General.
-
-**Pick a writing mode** by clicking the notch panel, or let AirScribe choose automatically per app:
-
-| Mode | What it produces |
+| Permission | Why |
 |---|---|
-| **Email** | Concise professional prose. Never invents greetings, subjects, or sign-offs. |
-| **Chat** | Short conversational messages. |
-| **Post** | Clear social-post prose. |
-| **General** | Plain cleanup, no rewriting. |
+| Microphone | To hear you |
+| Accessibility | For the global hold-to-talk key, and to type text into other apps |
 
-**Ask the assistant** by starting your dictation with "AirScribe" or "Hey AirScribe" — for example *"Hey AirScribe, make that more formal"*. Everything else is inserted as literal text, including ordinary sentences that merely contain the word "scribe".
+Screen Recording is only requested if you turn on screen-text context or record your Mac's audio during a meeting. Plain dictation never needs it.
 
-**Record a meeting** from the menu bar, or open `airscribe://meetings`.
+The speech model downloads on first launch. It's roughly 713 MB across six files, each pinned to an exact revision and checked against a SHA-256 hash before AirScribe will use it. If the download is interrupted it picks up where it left off, and you can pause it from the menu bar or from Settings.
 
-### Where text goes when insertion isn't possible
+While that's happening, dictation still works. AirScribe falls back to Apple's built-in speech recognition until its own model is ready.
 
-AirScribe verifies that text actually landed before reporting success. If it can't confirm insertion — no editable field is focused, or the app doesn't expose one — it falls back to copying the transcript to your clipboard and tells you so. You can turn that fallback off in Settings → General if you would rather keep your clipboard untouched and see an error instead.
+Later, if you want automatic language detection or you speak more than one language in a sentence (Hindi and English mixed together, say), install the 100+ language pack from Settings. It's about 1.64 GB.
 
-Dictation is refused entirely while a password or other secure field is focused.
+## Using it
 
-## Features
+Hold Control, talk, release. That's the whole thing.
 
-### Dictation
+If you'd rather not hold the key down, press Control twice quickly to keep listening, then press it again to stop. You can switch the trigger to Option, Command, or Fn in Settings.
 
-- On-device speech recognition with automatic fallback to Apple's engine while the model installs or if it fails.
-- Live partial text while you speak.
-- Pause-aware punctuation: sentence and clause boundaries are inferred from your actual speech timing, not guessed from grammar alone.
-- Deterministic cleanup — filler words ("um", "you know"), stutters, and self-corrections ("port, I mean put") removed. Idiomatic repeats such as "had had" are preserved.
-- Spoken symbols and commands: "at symbol" → `@`, "question mark" → `?`, "full stop" → `.` — while still writing *"full stop"* as words when you are plainly talking about the phrase.
-- Context-aware homophone repair for ones/once, there/their/they're, your/you're, its/it's, to/too.
-- Direct speech gets quotation marks automatically.
-- Optional deeper polish through Apple Intelligence, on-device.
-- Insert immediately and safely replace once polish finishes, or wait for the polished version — your choice.
+Click the notch panel to pick a writing mode, or set up per-app rules and let AirScribe choose:
 
-### Languages
-
-- Dictate in your chosen locale, or use `auto` for automatic detection with the language pack installed.
-- Output in the original language, transliterated Romanized Hindi, or translated to English on-device.
-- Transliteration is deterministic and never silently becomes translation: Latin text and English words pass through unchanged.
-- Generated translation and polish are validated before they replace what you said — output that drops names, numbers, or a large share of your words is discarded in favour of the original.
-
-### Learning and vocabulary
-
-- Custom vocabulary you control, with correct capitalization preserved and split words rejoined ("air scribe" → "AirScribe").
-- Optional learning from your corrections: fix a misheard name once in the same field and AirScribe remembers it. Rules keyed on everyday words are never learned, so correcting one "to" cannot rewrite your future dictation. Retained rules are capped and evictable, and every one is listed and individually deletable in Settings.
-
-### Modes and per-app behaviour
-
-- Four writing modes with fully editable instructions, resettable to defaults.
-- Per-app mode mappings — e.g. Mail always uses Email mode, Slack always uses Chat.
-
-### Meetings
-
-- Records your microphone and your Mac's own audio as separate, speaker-labelled tracks.
-- Live source-labelled transcript while recording.
-- Timed transcripts with local summaries covering Overview, Decisions, and Action items. Long meetings are summarised in segments and merged, so nothing is dropped for length.
-- Export as TXT, Markdown, or SRT subtitles.
-- Recordings stop automatically after four hours, and won't start without enough free disk space.
-- Falls back to microphone-only if Mac audio capture is unavailable.
-
-### Context and assistant (opt-in, off by default)
-
-- Optionally share the active app, window title, focused text, clipboard, and on-screen text (OCR) with the local cleanup pass, to spell names correctly.
-- Per-app exclusion list.
-- Context capture is skipped in secure fields, and skipped whenever the focused control cannot be positively identified as safe.
-- "Hey AirScribe" inline assistant, answering from your recent dictation and local context.
-- Captured context is **never** sent to the cloud, even with cloud polish enabled.
-
-### History
-
-- Searchable local history with the raw and cleaned text, engine used, and latency.
-- Replay the original audio, copy, export, delete individually, or delete everything.
-
-### App and system integration
-
-- Menu-bar app with a hardware-aligned notch panel that stays collapsed while idle.
-- Launch at login.
-- Interrupted-recording recovery: if AirScribe is killed mid-dictation, the audio is preserved and offered on next launch.
-- Automatic signed updates over HTTPS with EdDSA signature verification.
-- Hardened Runtime, owner-only file permissions on all recordings and transcripts, and API keys in the Keychain.
-
-## Settings reference
-
-Open Settings from the menu bar. Nine panes:
-
-| Pane | Contents |
+| Mode | What you get |
 |---|---|
-| **General** | Default mode, locale, output language, hotkey, polish behaviour, clipboard-fallback behaviour |
-| **Writing Modes** | Per-mode instructions and per-app mappings |
-| **Vocabulary** | Your terms, plus every learned correction with individual delete |
-| **Models & Languages** | Speech model status, pause/resume, folder reveal, 100+ language pack install/remove |
-| **Context & Assistant** | Context sources, per-app exclusions, "Hey AirScribe" toggle |
-| **History** | Search, replay, copy, export, delete |
-| **BYOK Polish** | Optional cloud provider, model ID, API key |
-| **Privacy** | Permission status and "Delete Everything on This Mac" |
-| **App & Updates** | Launch at login, update checks, recovered recordings |
+| Email | Tightened, professional prose. It won't invent a greeting, subject line, or sign-off. |
+| Chat | Short and conversational. |
+| Post | Clear prose suitable for posting. |
+| General | Cleanup only, no rewriting. |
 
-## Where your data lives
+Start a sentence with "AirScribe" or "Hey AirScribe" to talk to the assistant instead of dictating. For example, "Hey AirScribe, make that more formal." Anything else gets typed out as-is, including ordinary sentences that happen to contain the word scribe.
 
-Everything is local, under your own account:
+To record a meeting, use the menu bar or open `airscribe://meetings`.
 
-| What | Path |
+### When text can't be inserted
+
+AirScribe checks that text actually landed before it claims success. If it can't confirm that (nothing editable is focused, or the app doesn't expose its text field), it copies the transcript to your clipboard and tells you it did that.
+
+That overwrites whatever you had copied, so there's a switch in Settings to turn the fallback off. With it off you get an error instead and your clipboard is left alone.
+
+Dictation is refused outright while a password field has focus.
+
+## What it can do
+
+**Dictation.** Runs on-device, and falls back to Apple's engine while the model installs or if it fails. You see partial text as you speak. Punctuation comes from your actual pauses rather than guesswork, so where you stop talking is where the sentence ends. Filler words go away ("um", "you know"), as do stutters and spoken corrections like "port, I mean put". Phrases that are genuinely repeated, "had had" for instance, are left alone.
+
+Say "at symbol" and you get `@`. Same for question marks, full stops, and the rest. If you're plainly talking *about* the phrase, as in "print the words full stop", it stays as words.
+
+Homophones get sorted out from context: ones and once, there and their and they're, your and you're, its and it's, to and too. Direct speech picks up quotation marks on its own.
+
+If you restart a phrase halfway through and leave an article stranded, as in "the it shouldn't be hardcoded", the leftover word is dropped so the sentence reads properly.
+
+If Apple Intelligence is available you can turn on a deeper rewriting pass, still on-device. You choose whether AirScribe inserts immediately and quietly replaces the text once polish finishes, or waits and inserts the finished version once.
+
+**Languages.** Dictate in whatever locale you pick, or use `auto` with the language pack installed. Output can stay in the original language, come out as Romanized Hindi, or be translated to English locally. Transliteration is deterministic and never turns into translation, so English words pass straight through.
+
+Anything a language model produces gets checked before it replaces your words. If a rewrite or translation loses names, numbers, or a big chunk of what you said, it's thrown away and you keep the original.
+
+**Vocabulary and learning.** Add terms you use and AirScribe keeps their capitalization and rejoins them when the recognizer splits them ("air scribe" becomes "AirScribe").
+
+It can also learn from your corrections: fix a misheard name once, in the same field, and it remembers. That learning is deliberately narrow, because a rule that fires everywhere is worse than no rule at all.
+
+- Everyday words are never learned as keys. Changing a single "to" or "our" teaches nothing, so it can't come back to haunt every later sentence.
+- A misheard name or piece of jargon ("cadence" to "Kadenze") is a transcription fix, so it applies everywhere.
+- A shortening or a style tweak ("our" to "r" for a forum post) stays in the app you taught it in. Your habits on one site don't follow you into your email.
+- Everything learned is listed in Settings with the app it applies to, and you can delete entries one at a time. Nothing is hidden from you.
+
+**Modes and per-app rules.** Four modes, each with instructions you can edit and reset. Map apps to modes so Mail always uses Email and Slack always uses Chat.
+
+**Meetings.** Records your microphone and your Mac's own audio as two separate labelled tracks, with a live transcript as it goes. You get a timed transcript and a local summary covering overview, decisions, and action items. Long meetings are summarized in pieces and then merged, so nothing gets dropped for being too long. Export as TXT, Markdown, or SRT subtitles. Recording stops on its own after four hours, and won't start if the disk is nearly full. If your Mac's audio can't be captured, it records the microphone only and says so.
+
+**Context and the assistant.** Off by default. If you turn it on, AirScribe can look at the active app, window title, focused text, clipboard, and text on screen, and use that to spell names correctly. There's a per-app exclusion list. It skips secure fields, and skips anything it can't positively identify as safe. The "Hey AirScribe" assistant answers from your recent dictation and this local context. None of it is ever sent to the cloud, even if cloud polish is on.
+
+**History.** Everything you dictate is searchable locally, with the raw text, the cleaned text, which engine ran, and how long it took. You can replay the original audio, copy, export, delete one entry, or delete the lot.
+
+**System bits.** Menu bar app with a notch panel that stays out of the way when idle. Launch at login. If AirScribe is killed mid-recording, the audio is kept and offered to you next time you open it. Updates arrive automatically over HTTPS with signature checking. Hardened Runtime is on, recordings and transcripts are readable only by you, and API keys live in the Keychain.
+
+## Settings
+
+Nine panes, reachable from the menu bar.
+
+| Pane | What's in it |
 |---|---|
-| Dictation history and audio | `~/Library/Application Support/AirScribe/history.json`, `~/Library/Application Support/AirScribe/audio/` |
-| Meeting transcripts and audio | `~/Library/Application Support/AirScribe/meetings.json`, `~/Library/Application Support/AirScribe/MeetingAudio/` |
+| General | Default mode, locale, output language, hotkey, polish behaviour, clipboard fallback |
+| Writing Modes | Per-mode instructions, per-app mappings |
+| Vocabulary | Your terms, and every learned correction with a delete button |
+| Models & Languages | Model status, pause and resume, reveal folder, language pack |
+| Context & Assistant | Context sources, app exclusions, assistant toggle |
+| History | Search, replay, copy, export, delete |
+| BYOK Polish | Optional cloud provider, model ID, API key |
+| Privacy | Permission status, and Delete Everything on This Mac |
+| App & Updates | Launch at login, update checks, recovered recordings |
+
+## Where your files go
+
+All of it sits under your own account:
+
+| What | Where |
+|---|---|
+| Dictation history and audio | `~/Library/Application Support/AirScribe/history.json` and `audio/` |
+| Meeting transcripts and audio | `~/Library/Application Support/AirScribe/meetings.json` and `MeetingAudio/` |
 | Vocabulary, learned corrections, mode instructions | `~/Library/Application Support/AirScribe/preferences.json` |
 | Downloaded models | `~/Library/Application Support/AirScribe/models/` |
 | Other settings | `~/Library/Preferences/com.airscribe.mac.plist` |
-| Cloud API key (only if you set one) | macOS Keychain, service `com.airscribe.mac.cloud-polish` |
+| Cloud API key, if you set one | Keychain, service `com.airscribe.mac.cloud-polish` |
 | Temporary audio buffers | `$TMPDIR/AirScribe/TranscriptionBuffers/` |
 
-Recordings, transcripts, and anything containing your own words are written with owner-only permissions (`0600`, in `0700` directories).
+Recordings, transcripts, and anything else containing your words are written so only your account can read them (mode 0600, inside 0700 directories).
 
-## Uninstall
+## Uninstalling
 
-### Step 1 — delete your data from inside the app
+**Start inside the app.** Open Settings, go to Privacy, and click "Delete Everything on This Mac".
 
-Open **Settings → Privacy → Delete Everything on This Mac…** and confirm.
+That clears dictation history, meeting transcripts and audio, vocabulary, learned corrections, every downloaded model, your saved API key in the Keychain, and all settings. It also turns off launch at login. If anything can't be removed, AirScribe tells you exactly what's left.
 
-This removes dictation history, meeting transcripts and audio, custom vocabulary, learned corrections, every downloaded model file, the saved API key from your Keychain, and all settings. It also turns off launch at login. If anything cannot be removed, AirScribe tells you exactly what remained.
+Do this before you delete the app. It's the only step that handles the Keychain entry and the login item for you.
 
-Do this **before** deleting the app — it is the only step that clears the Keychain item and the login item for you.
+**Then remove the app.** Quit AirScribe from the menu bar and drag `/Applications/AirScribe.app` to the Trash.
 
-### Step 2 — remove the app
-
-Quit AirScribe from the menu bar, then drag `/Applications/AirScribe.app` to the Trash.
-
-### Step 3 — optional cleanup
-
-If you skipped step 1, or want to be certain nothing is left:
+**If you skipped the first step,** or you want to be certain nothing remains:
 
 ```sh
-# Data, models, and cached transcription buffers
 rm -rf ~/Library/Application\ Support/AirScribe
 rm -rf "${TMPDIR}AirScribe"
-
-# Settings
 defaults delete com.airscribe.mac 2>/dev/null
 rm -f ~/Library/Preferences/com.airscribe.mac.plist
-
-# Saved cloud API key, if you ever set one
 security delete-generic-password -s com.airscribe.mac.cloud-polish 2>/dev/null
-
-# Updater state
 rm -rf ~/Library/Caches/com.airscribe.mac
-rm -rf ~/Library/Application\ Support/Caches/com.airscribe.mac
 ```
 
-Then revoke the permissions macOS remembers:
+Then take back the permissions macOS is holding:
 
 ```sh
 tccutil reset Microphone com.airscribe.mac
@@ -241,26 +195,21 @@ tccutil reset Accessibility com.airscribe.mac
 tccutil reset ScreenCapture com.airscribe.mac
 ```
 
-If a stale entry remains, remove AirScribe by hand from System Settings → Privacy & Security → Accessibility / Microphone / Screen Recording, and from General → Login Items.
+If a stale entry hangs around, remove AirScribe by hand from System Settings under Privacy & Security (Accessibility, Microphone, Screen Recording) and from General, Login Items.
 
-## Optional cloud polish (BYOK)
+## Cloud polish, if you want it
 
-Off by default, and entirely optional — AirScribe is fully functional without it. When you enable it with your own API key:
+This is off by default and completely optional. AirScribe does not need it. If you turn it on with your own API key, here's exactly what happens:
 
-- Only **transcript text** is sent. Microphone audio is never uploaded.
-- Captured context — clipboard, screen text, focused text — is never sent.
-- HTTPS is required. Redirects are refused. URLs carrying embedded credentials are rejected.
-- Requests are not cached or stored, and are sent with `store: false`.
-- Your key is kept in the Keychain with device-only data protection, never in a file or plist.
-- Sending a key to a host that is not a recognised provider requires explicit confirmation first, so a typo in the endpoint cannot leak it.
-- A truncated or content-dropping response is discarded and your on-device text is used instead.
-- A provider outage never blocks dictation.
+Only transcript text is sent. Your microphone audio never leaves the machine, and neither does captured context like your clipboard or what's on screen. HTTPS is required, redirects are refused, and a URL with credentials embedded in it is rejected. Requests are sent with `store: false` and aren't cached anywhere.
 
-Set it up in Settings → BYOK Polish: enter an HTTPS endpoint (OpenAI Responses API shape), a model ID, and your key.
+Your key is kept in the Keychain with device-only protection, never in a file or a plist. If the endpoint you enter isn't a host AirScribe recognizes, it will not send your key until you confirm that host by hand, so a typo can't leak it. If a response comes back truncated or missing part of what you said, it's discarded and your local text is used instead. A provider being down never blocks dictation.
 
-## Build from source
+Set it up under Settings, BYOK Polish: an HTTPS endpoint using the OpenAI Responses API shape, a model ID, and your key.
 
-Requirements: Xcode 26.3+, macOS 26, and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
+## Building it yourself
+
+You'll need Xcode 26.3 or newer, macOS 26, and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
 
 ```sh
 git clone https://github.com/sourabhsoni0104/airscribe.git
@@ -269,11 +218,11 @@ xcodegen generate
 open AirScribe.xcodeproj
 ```
 
-Select the `AirScribe` scheme and **My Mac**, then Run.
+Pick the AirScribe scheme and My Mac, then Run.
 
-The Xcode project is generated from `app/project.yml` — edit that file and rerun `xcodegen generate` rather than hand-editing the project.
+The Xcode project is generated from `app/project.yml`. Edit that and re-run `xcodegen generate` rather than editing the project file directly.
 
-### Run the tests
+Tests:
 
 ```sh
 cd app
@@ -282,22 +231,20 @@ xcodebuild -project AirScribe.xcodeproj -scheme AirScribe \
   CODE_SIGNING_ALLOWED=NO test
 ```
 
-The model runtime integration test skips itself unless the downloaded model files are present locally.
+The model runtime test skips itself unless the downloaded model files are on the machine.
 
-### Build an unsigned app for local use
+An unsigned build you can run locally:
 
 ```sh
 cd app
 xcodebuild -project AirScribe.xcodeproj -scheme AirScribe \
   -configuration Release -destination 'platform=macOS,arch=arm64' \
-  ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
-  -derivedDataPath build/local build
-open build/local/Build/Products/Release
+  ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
 ```
 
-### Ship a signed, notarized release
+### Cutting a release
 
-The updater's public key and HTTPS appcast URL are compiled into the app; the private signing key stays in your Keychain. Developer ID and notarization credentials are supplied through the environment or CI secrets and are never committed.
+The updater's public key and appcast URL are compiled into the app. The private signing key stays in your Keychain, and Developer ID and notarization credentials come from the environment or from CI secrets. None of that is committed.
 
 ```sh
 cd app
@@ -306,44 +253,36 @@ AIRSCRIBE_CODE_SIGN_IDENTITY="Developer ID Application" \
   zsh Scripts/build-release.sh
 
 zsh Scripts/notarize-release.sh /path/to/AirScribe.app YOUR_NOTARYTOOL_PROFILE
-
-# Drag-to-install disk image, signed and notarized in its own right
 zsh Scripts/make-dmg.sh /path/to/AirScribe.app YOUR_NOTARYTOOL_PROFILE
 
 AIRSCRIBE_DOWNLOAD_URL_PREFIX=https://github.com/OWNER/REPO/releases/download/v1.0.0/ \
   zsh Scripts/generate-appcast.sh /path/to/release-directory
 ```
 
-`make-dmg.sh` stages the app beside an Applications alias, lays the window out so
-the drag gesture is obvious, compresses the image, signs it, and — when given a
-notarytool profile — notarizes and staples it. Attach the `.dmg` to the GitHub
-release for humans; `generate-appcast.sh` consumes the `.zip` for Sparkle's
-automatic updates, so publish both.
+`build-release.sh` refuses to ship a build that still has debug entitlements or debug dylibs in it. `make-dmg.sh` produces the drag-to-install disk image, signs it, and notarizes it if you pass a profile. Attach the `.dmg` to the GitHub release for people to download, and keep the `.zip` too, because that's what Sparkle reads for automatic updates. `Config/Release.xcconfig.example` lists the non-secret build values.
 
-`build-release.sh` refuses to ship a build with debug entitlements or debug dylibs present. `Config/Release.xcconfig.example` documents the non-secret build values.
+## When something goes wrong
 
-## Troubleshooting
+**The hotkey does nothing.** Accessibility permission is missing, or an app update reset it. Re-grant it in Settings under Privacy. AirScribe re-arms the shortcut the moment it's granted.
 
-**The hotkey does nothing.** Accessibility permission is missing or was reset by an app update. Open Settings → Privacy and re-grant it; AirScribe re-arms the shortcut as soon as it is granted.
+**Text keeps landing on the clipboard.** AirScribe couldn't confirm the focused field was an editable, non-secure text area, so it took the safe route. See [When text can't be inserted](#when-text-cant-be-inserted).
 
-**Text is copied to the clipboard instead of inserted.** The focused field could not be confirmed as an editable, non-secure text area. This is deliberate — see [Where text goes when insertion isn't possible](#where-text-goes-when-insertion-isnt-possible).
+**An error mentions secure input.** A password field has focus, or an app is holding secure input. Dictation is blocked there deliberately.
 
-**Nothing is inserted and an error mentions secure input.** A password field or an app holding secure input has focus. Dictation is blocked there by design.
+**"An AirScribe Models file failed its integrity check."** A download was corrupted or tampered with. Hit Resume in Settings under Models & Languages and the file is fetched and verified again.
 
-**"An AirScribe Models file failed its integrity check."** A download was corrupted or intercepted. Use Resume in Settings → Models & Languages; the file is re-fetched and re-verified.
+**The model download won't start.** Check free space. Installing needs the remaining download plus 1 GB of headroom.
 
-**Model download will not start.** Check free disk space — installation requires the remaining download plus 1 GB of headroom.
+**A meeting captured no Mac audio.** Grant Screen Recording, which macOS requires for system audio. Without it you get a microphone-only recording, and the meeting window says so.
 
-**Meeting recorded no Mac audio.** Grant Screen Recording permission, which macOS requires for system-audio capture. AirScribe records microphone-only without it and says so in the meeting window.
-
-**Dictation stops early after switching headphones.** Changing input device mid-recording changes the sample rate; AirScribe keeps the audio captured before the switch rather than corrupting the whole recording. Stop and start again after switching devices.
+**Dictation stopped early after switching headphones.** Changing input device mid-recording changes the sample rate. AirScribe keeps the audio from before the switch instead of corrupting the whole recording. Stop and start again after changing devices.
 
 ## Privacy
 
-No account. No telemetry. No transcription server. Your audio, transcripts, settings, vocabulary, and models never leave your Mac unless you explicitly enable BYOK polish, which sends transcript text only.
+No account, no telemetry, no transcription server. Your audio, transcripts, settings, vocabulary, and models stay on your Mac unless you deliberately turn on BYOK polish, which sends transcript text and nothing else.
 
-Report a vulnerability privately through [GitHub Security Advisories](https://github.com/sourabhsoni0104/airscribe/security/advisories/new). See [SECURITY.md](SECURITY.md).
+Found a security problem? Please report it privately through [GitHub Security Advisories](https://github.com/sourabhsoni0104/airscribe/security/advisories/new) rather than a public issue. Details in [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT for AirScribe's source code. Third-party frameworks and downloaded model assets retain their respective licenses.
+MIT, see [LICENSE](LICENSE). Third-party frameworks and downloaded model files keep their own licenses.

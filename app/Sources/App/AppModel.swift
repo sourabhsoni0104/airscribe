@@ -57,6 +57,12 @@ final class AppModel: ObservableObject {
     private var learnedCorrectionOrder: [String] {
         didSet { sensitivePreferences.setValue(learnedCorrectionOrder, forKey: Keys.learnedCorrectionOrder) }
     }
+    /// Bundle identifier of the app each correction was taught in, so a house
+    /// style learned in one place is not replayed across everything the user
+    /// writes. See `BasicTextEnhancer.appliesInEveryApp`.
+    @Published private(set) var learnedCorrectionScopes: [String: String] {
+        didSet { sensitivePreferences.setValue(learnedCorrectionScopes, forKey: Keys.learnedCorrectionScopes) }
+    }
 
     /// Ceiling on retained correction rules. Each rule is replayed against every
     /// later dictation, so the set has to stay small enough to stay predictable.
@@ -187,6 +193,7 @@ final class AppModel: ObservableObject {
         static let learnFromCorrections = "learnFromCorrections"
         static let learnedCorrections = "learnedCorrections"
         static let learnedCorrectionOrder = "learnedCorrectionOrder"
+        static let learnedCorrectionScopes = "learnedCorrectionScopes"
         static let onboardingComplete = "onboardingComplete"
         static let modeInstructions = "modeInstructions"
         static let automaticModeSelection = "automaticModeSelection"
@@ -212,7 +219,7 @@ final class AppModel: ObservableObject {
         static let all: [String] = [
             mode, dictationHotkey, locale, outputLanguageMode, preferExtendedLanguages,
             appleIntelligence, vocabulary, learnFromCorrections, learnedCorrections,
-            learnedCorrectionOrder, onboardingComplete, modeInstructions,
+            learnedCorrectionOrder, learnedCorrectionScopes, onboardingComplete, modeInstructions,
             automaticModeSelection, appModeMappings, cloudPolishEnabled, cloudEndpoint,
             cloudModel, waitForPolish, contextAwarenessEnabled, clipboardContextEnabled,
             screenContextEnabled, assistantEnabled, excludedContextApps,
@@ -253,6 +260,9 @@ final class AppModel: ObservableObject {
         learnedCorrectionOrder = (sensitivePreferences
             .value([String].self, forKey: Keys.learnedCorrectionOrder) ?? [])
             .filter { storedCorrections[$0] != nil }
+        learnedCorrectionScopes = (sensitivePreferences
+            .value([String: String].self, forKey: Keys.learnedCorrectionScopes) ?? [:])
+            .filter { storedCorrections[$0.key] != nil }
         onboardingComplete = defaults.bool(forKey: Keys.onboardingComplete)
         modeInstructions = sensitivePreferences.value([String: String].self, forKey: Keys.modeInstructions)
             ?? Dictionary(uniqueKeysWithValues: WritingMode.allCases.map { ($0.rawValue, $0.enhancementInstruction) })
@@ -521,7 +531,9 @@ final class AppModel: ObservableObject {
                     outputBase,
                     mode: selectedMode,
                     vocabulary: customVocabulary + contextualVocabularyTerms(),
-                    learnedCorrections: learnedCorrections
+                    learnedCorrections: applicableLearnedCorrections(
+                        forBundleIdentifier: lastExternalBundleIdentifier
+                    )
                 )
             }
             let modeUsesGenerativePolish = selectedMode != .general
@@ -712,6 +724,7 @@ final class AppModel: ObservableObject {
     func removeLearnedCorrection(_ heard: String) {
         learnedCorrections.removeValue(forKey: heard)
         learnedCorrectionOrder.removeAll { $0 == heard }
+        learnedCorrectionScopes.removeValue(forKey: heard)
     }
 
     /// Stores a correction rule, evicting the oldest once the cap is reached.
@@ -722,6 +735,7 @@ final class AppModel: ObservableObject {
                   let oldest = learnedCorrectionOrder.first {
                 learnedCorrectionOrder.removeFirst()
                 learnedCorrections.removeValue(forKey: oldest)
+                learnedCorrectionScopes.removeValue(forKey: oldest)
             }
             learnedCorrectionOrder.append(heard)
         } else {
@@ -729,6 +743,44 @@ final class AppModel: ObservableObject {
             learnedCorrectionOrder.append(heard)
         }
         learnedCorrections[heard] = correction
+        learnedCorrectionScopes[heard] = lastExternalBundleIdentifier
+    }
+
+    /// The corrections that should be replayed for the app being written into.
+    ///
+    /// A correction taught in one app used to be applied to everything the user
+    /// dictated afterwards. Editing "our" to "r" for a forum post then rewrote
+    /// "our" everywhere. Transcription fixes such as a misheard name still apply
+    /// everywhere; anything that looks like house style stays where it was taught.
+    func applicableLearnedCorrections(
+        forBundleIdentifier bundleIdentifier: String
+    ) -> [String: String] {
+        learnedCorrections.filter { heard, correction in
+            if BasicTextEnhancer.appliesInEveryApp(heard: heard, correction: correction) {
+                return true
+            }
+            guard let scope = learnedCorrectionScopes[heard], !scope.isEmpty else {
+                // Learned before scopes were recorded, so the app it belongs to is
+                // unknown. Replaying it everywhere is what caused the problem.
+                return false
+            }
+            return scope == bundleIdentifier
+        }
+    }
+
+    /// Human-readable scope for the Vocabulary settings list.
+    func learnedCorrectionScopeDescription(for heard: String) -> String {
+        guard let correction = learnedCorrections[heard] else { return "" }
+        if BasicTextEnhancer.appliesInEveryApp(heard: heard, correction: correction) {
+            return "Everywhere"
+        }
+        guard let scope = learnedCorrectionScopes[heard], !scope.isEmpty else {
+            return "Inactive, re-teach in the app you want it"
+        }
+        if scope == lastExternalBundleIdentifier, !lastExternalApplicationName.isEmpty {
+            return "Only in \(lastExternalApplicationName)"
+        }
+        return "Only in \(scope)"
     }
 
     private func observeClipboardCorrection(to copiedText: String) {
@@ -992,6 +1044,7 @@ final class AppModel: ObservableObject {
         learningFeedbackTask = nil
         learnedCorrections = [:]
         learnedCorrectionOrder = []
+        learnedCorrectionScopes = [:]
         onboardingComplete = false
         modeInstructions = Dictionary(
             uniqueKeysWithValues: WritingMode.allCases.map {

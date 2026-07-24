@@ -120,7 +120,7 @@ struct NotchView: View {
                 Label("Copied", systemImage: "doc.on.clipboard.fill")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color(red: 0.65, green: 0.95, blue: 0.45))
-                Text("No text box found — paste with ⌘V")
+                Text("No text box found, paste with ⌘V")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.white.opacity(0.72))
             }
@@ -255,7 +255,7 @@ private struct NotchLogo: View {
     let size: CGFloat
 
     private static let image: NSImage? = {
-        guard let url = Bundle.main.url(forResource: "AirScribeIcon", withExtension: "svg") else {
+        guard let url = Bundle.main.url(forResource: "AirScribeLogo", withExtension: "svg") else {
             return nil
         }
         return NSImage(contentsOf: url)

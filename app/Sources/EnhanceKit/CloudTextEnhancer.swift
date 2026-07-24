@@ -22,7 +22,7 @@ actor CloudTextEnhancer {
 
     /// Hosts whose request and response shape this client is written against.
     /// Anything else still works, but the user has to acknowledge that their key
-    /// will be sent there — see `CloudPolishConfiguration.acknowledgedHost`.
+    /// will be sent there. See `CloudPolishConfiguration.acknowledgedHost`.
     static let knownProviderHosts: Set<String> = [
         "api.openai.com",
         "api.anthropic.com",

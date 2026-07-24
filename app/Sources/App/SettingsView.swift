@@ -519,12 +519,19 @@ private struct VocabularySettingsView: View {
                 if !model.learnedCorrections.isEmpty {
                     Section("Learned corrections") {
                         ForEach(model.learnedCorrections.keys.sorted(), id: \.self) { heard in
-                            HStack {
-                                Text(heard)
-                                Image(systemName: "arrow.right")
-                                    .foregroundStyle(.secondary)
-                                Text(model.learnedCorrections[heard] ?? "")
-                                    .fontWeight(.semibold)
+                            HStack(alignment: .firstTextBaseline) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(heard)
+                                        Image(systemName: "arrow.right")
+                                            .foregroundStyle(.secondary)
+                                        Text(model.learnedCorrections[heard] ?? "")
+                                            .fontWeight(.semibold)
+                                    }
+                                    Text(model.learnedCorrectionScopeDescription(for: heard))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                                 Spacer()
                                 Button {
                                     model.removeLearnedCorrection(heard)
@@ -536,6 +543,9 @@ private struct VocabularySettingsView: View {
                             }
                         }
                     }
+                    Text("A misheard name is corrected everywhere. A shortening or a style change only applies in the app you taught it in, so a habit from one site does not follow you into your email.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section("Vocabulary") {
                 ForEach(model.customVocabulary, id: \.self) { term in

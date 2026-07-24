@@ -437,6 +437,7 @@ struct BasicTextEnhancer: Sendable {
             with: "you",
             options: [.regularExpression, .caseInsensitive]
         )
+        text = removeStrandedDeterminers(in: text)
         text = text.replacingOccurrences(of: #"\s+([,.;:!?])"#, with: "$1", options: .regularExpression)
         text = text.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
         text = text.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
@@ -508,6 +509,27 @@ struct BasicTextEnhancer: Sendable {
         text = punctuateDirectSpeech(in: text)
 
         return text
+    }
+
+    /// Drops a determiner left stranded in front of a word it cannot modify.
+    ///
+    /// Restarting a phrase mid-sentence leaves the article behind, as in "the it
+    /// shouldn't be hardcoded". No determiner can precede a pronoun or an
+    /// auxiliary verb, so the leftover word is safe to remove and the sentence
+    /// reads correctly again.
+    private func removeStrandedDeterminers(in source: String) -> String {
+        let followers = [
+            "it", "he", "she", "they", "we", "you", "its", "his", "her", "their",
+            "our", "my", "your", "is", "are", "was", "were", "am", "be", "been",
+            "should", "shouldn't", "would", "wouldn't", "could", "couldn't",
+            "can", "can't", "will", "won't", "do", "does", "did", "don't",
+            "doesn't", "didn't", "has", "have", "had", "hasn't", "haven't"
+        ].joined(separator: "|")
+        return source.replacingOccurrences(
+            of: #"(?i)(?<![\p{L}\p{N}])(?:the|an|a)\s+(?=(?:"# + followers + #")(?![\p{L}\p{N}]))"#,
+            with: "",
+            options: .regularExpression
+        )
     }
 
     private func resolveContextualHomophones(in source: String) -> String {
@@ -686,8 +708,22 @@ struct BasicTextEnhancer: Sendable {
 
     /// A learned correction is replayed against every later dictation, so a rule
     /// keyed on an everyday word ("to" → "too") would rewrite unrelated text
-    /// forever. Only distinctive keys — names, jargon, multi-word phrases — are
+    /// forever. Only distinctive keys (names, jargon, multi-word phrases) are
     /// safe to propagate.
+    /// Whether a correction is safe to replay in apps other than the one it was
+    /// taught in.
+    ///
+    /// Fixing a name or a piece of jargon is a transcription fix and belongs
+    /// everywhere. Rewriting a word to a shorter, lowercase form is a house style
+    /// ("our" to "r" for a forum post), and applying that everywhere silently
+    /// mangles ordinary writing. Style therefore stays local to its app.
+    static func appliesInEveryApp(heard: String, correction: String) -> Bool {
+        guard let first = correction.first(where: \.isLetter) else { return false }
+        guard first.isUppercase else { return false }
+        // A shortening is an abbreviation, not a spelling fix, whatever its case.
+        return correction.count >= heard.count
+    }
+
     static func shouldNotPropagate(heard: String, correction: String) -> Bool {
         let normalizedHeard = heard.lowercased()
         let heardWords = normalizedHeard.split(whereSeparator: \.isWhitespace)
@@ -766,7 +802,7 @@ struct CorrectionLearner: Sendable {
     /// A rule is replayed against every later dictation, so one edit of a word
     /// this common would silently rewrite unrelated text forever. The list
     /// deliberately includes both sides of the homophone pairs a speaker is most
-    /// likely to correct by hand — there/their, your/you're, its/it's, to/too —
+    /// likely to correct by hand (there/their, your/you're, its/it's, to/too)
     /// because those are exactly the edits that must stay local to one dictation.
     /// Distinctive keys and multi-word phrases are still learned normally.
     static let commonWords: Set<String> = [

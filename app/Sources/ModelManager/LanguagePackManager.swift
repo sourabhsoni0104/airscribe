@@ -14,7 +14,7 @@ enum LanguagePackState: Equatable, Sendable {
     var title: String {
         switch self {
         case .notInstalled: "Optional"
-        case let .installing(progress, _): "Installing — \(Int(progress * 100))%"
+        case let .installing(progress, _): "Installing \(Int(progress * 100))%"
         case .installed: "Installed"
         case .paused: "Paused"
         case .failed: "Installation failed"

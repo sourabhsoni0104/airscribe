@@ -130,12 +130,12 @@ struct MenuContentView: View {
 
     private var statusTitle: String {
         switch model.phase {
-        case .idle: "Ready — hold or double-press \(model.dictationHotkey.title) to dictate"
+        case .idle: "Ready. Hold or double-press \(model.dictationHotkey.title) to dictate"
         case .peek: "Choose a mode, then hold or double-press \(model.dictationHotkey.title)"
         case .listening: "Listening and recording… release \(model.dictationHotkey.title), or press again to stop"
         case .processing: "Transcribing and cleaning…"
         case .done: "Text inserted"
-        case .copied: "No text box found — copied to clipboard"
+        case .copied: "No text box found, copied to clipboard"
         case let .learned(heard, correction): "Learned “\(heard)” → “\(correction)”"
         case let .error(message): message
         }

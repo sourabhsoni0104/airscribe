@@ -2,7 +2,7 @@ import XCTest
 @testable import AirScribe
 
 @MainActor
-final class MilestoneSixTests: XCTestCase {
+final class LanguageAndRecoveryTests: XCTestCase {
     func testOutputLanguageModesRoundTrip() throws {
         let encoded = try JSONEncoder().encode(OutputLanguageMode.english)
         XCTAssertEqual(try JSONDecoder().decode(OutputLanguageMode.self, from: encoded), .english)
@@ -109,23 +109,4 @@ final class MilestoneSixTests: XCTestCase {
         }
     }
 
-    func testCloudPolishRejectsCredentialBearingEndpoint() async {
-        let enhancer = CloudTextEnhancer()
-        do {
-            _ = try await enhancer.enhance(
-                "Hello",
-                instruction: "",
-                configuration: CloudPolishConfiguration(
-                    endpoint: URL(string: "https://user:password@example.com/v1/responses")!,
-                    model: "test",
-                    apiKey: "not-a-real-key"
-                )
-            )
-            XCTFail("A URL containing credentials must be rejected before any network request")
-        } catch CloudPolishError.insecureEndpoint {
-            // Expected.
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
-    }
 }

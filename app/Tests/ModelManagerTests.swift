@@ -7,7 +7,7 @@ final class ModelManagerTests: XCTestCase {
     func testDownloadStateExposesProgress() {
         let state = ModelInstallState.downloading(progress: 0.42, file: "model.safetensors")
         XCTAssertEqual(state.progress, 0.42)
-        XCTAssertEqual(state.title, "Downloading AirScribe Models — 42%")
+        XCTAssertEqual(state.title, "Downloading AirScribe Models 42%")
     }
 
     func testCompletedLocalSnapshotIsRecognizedWithoutNetwork() throws {

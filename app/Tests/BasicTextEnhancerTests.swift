@@ -57,6 +57,48 @@ final class BasicTextEnhancerTests: XCTestCase {
         )
     }
 
+    func testDropsDeterminerStrandedByARestartedPhrase() {
+        XCTAssertEqual(
+            enhancer.enhance("the it shouldn't be hardcoded", mode: .general),
+            "It shouldn't be hardcoded."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("I think the they are wrong about this", mode: .general),
+            "I think they are wrong about this."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("send me a your address", mode: .general),
+            "Send me your address."
+        )
+    }
+
+    func testKeepsDeterminersThatActuallyModifySomething() {
+        XCTAssertEqual(
+            enhancer.enhance("the item is hardcoded", mode: .general),
+            "The item is hardcoded."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("a hardcoded value is bad", mode: .general),
+            "A hardcoded value is bad."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("the iteration was slow", mode: .general),
+            "The iteration was slow."
+        )
+    }
+
+    func testStyleShorteningsDoNotApplyOutsideTheirApp() {
+        // Shortening "our" to "r" for a forum post is house style, not a fix.
+        XCTAssertFalse(BasicTextEnhancer.appliesInEveryApp(heard: "our", correction: "r"))
+        XCTAssertFalse(BasicTextEnhancer.appliesInEveryApp(heard: "you", correction: "u"))
+        XCTAssertFalse(BasicTextEnhancer.appliesInEveryApp(heard: "gonna", correction: "going to"))
+    }
+
+    func testMisheardNamesApplyEverywhere() {
+        XCTAssertTrue(BasicTextEnhancer.appliesInEveryApp(heard: "cadence", correction: "Kadenze"))
+        XCTAssertTrue(BasicTextEnhancer.appliesInEveryApp(heard: "sourab", correction: "Sourabh"))
+    }
+
     func testDoesNotApplyLearnedCorrectionsKeyedOnCommonWords() {
         // A single edit of an everyday word must not rewrite every later dictation.
         let output = enhancer.enhance(

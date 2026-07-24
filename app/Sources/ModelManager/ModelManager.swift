@@ -15,7 +15,7 @@ enum ModelInstallState: Equatable {
         switch self {
         case .idle: "Waiting to install"
         case .checking: "Checking AirScribe Models…"
-        case let .downloading(progress, _): "Downloading AirScribe Models — \(Int(progress * 100))%"
+        case let .downloading(progress, _): "Downloading AirScribe Models \(Int(progress * 100))%"
         case .verifying: "Verifying AirScribe Models…"
         case .installed: "AirScribe Models ready"
         case .paused: "AirScribe Models download paused"
