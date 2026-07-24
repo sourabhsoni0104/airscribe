@@ -49,7 +49,7 @@ brew uninstall --zap --cask airscribe    # also removes data, models, and settin
 
 ### From the disk image
 
-1. Download `AirScribe-1.0.0.dmg` from the [Releases page](https://github.com/sourabhsoni0104/airscribe/releases).
+1. [Download AirScribe](https://github.com/sourabhsoni0104/airscribe/releases/latest/download/AirScribe.dmg). That link always serves the newest release.
 2. Open it. A window appears with AirScribe on the left and your Applications folder on the right.
 3. Drag AirScribe onto Applications.
 4. Eject the disk image, then follow the unsigned-build step below before launching.
@@ -337,9 +337,14 @@ AIRSCRIBE_CODE_SIGN_IDENTITY="Developer ID Application" \
 zsh Scripts/notarize-release.sh /path/to/AirScribe.app YOUR_NOTARYTOOL_PROFILE
 zsh Scripts/make-dmg.sh /path/to/AirScribe.app YOUR_NOTARYTOOL_PROFILE
 
-AIRSCRIBE_DOWNLOAD_URL_PREFIX=https://github.com/OWNER/REPO/releases/download/v1.0.0/ \
+AIRSCRIBE_DOWNLOAD_URL_PREFIX=https://github.com/OWNER/REPO/releases/download/v1.0.1/ \
   zsh Scripts/generate-appcast.sh /path/to/release-directory
 ```
+
+When you attach the disk image to the GitHub release, upload a second copy named
+`AirScribe.dmg` alongside the versioned one. The website's download button points
+at `releases/latest/download/AirScribe.dmg`, a stable URL that serves whatever the
+newest release is, so that copy has to be present on every release.
 
 `build-release.sh` refuses to ship a build that still has debug entitlements or debug dylibs in it. `make-dmg.sh` produces the drag-to-install disk image, signs it, and notarizes it if you pass a profile. Attach the `.dmg` to the GitHub release for people to download, and keep the `.zip` too, because that's what Sparkle reads for automatic updates. `Config/Release.xcconfig.example` lists the non-secret build values.
 
