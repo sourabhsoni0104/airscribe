@@ -31,10 +31,14 @@ No account. No telemetry. No transcription server. Speech recognition, cleanup, 
 
 ### From a release build
 
-1. Download `AirScribe.zip` from the [Releases page](https://github.com/sourabhsoni0104/airscribe/releases).
-2. Double-click the zip to unpack `AirScribe.app`.
-3. Drag `AirScribe.app` into your `/Applications` folder.
-4. Double-click to launch it. Releases are signed with a Developer ID and notarized by Apple, so it opens normally.
+> If the Releases page has no builds yet, [build from source](#from-source) instead — it takes one command plus a Run in Xcode.
+
+1. Download `AirScribe-<version>.dmg` from the [Releases page](https://github.com/sourabhsoni0104/airscribe/releases).
+2. Double-click it. A window opens showing **AirScribe** next to your **Applications** folder.
+3. Drag AirScribe onto Applications.
+4. Eject the disk image, then launch AirScribe from Applications or Spotlight. Releases are signed with a Developer ID and notarized by Apple, so it opens normally.
+
+The app itself is a few tens of megabytes. It contains **no** speech models — those are downloaded on demand, on your machine, and can be removed at any time from Settings → Models & Languages.
 
 If macOS says the app "cannot be opened because the developer cannot be verified", you downloaded an unsigned build. Right-click the app, choose **Open**, then confirm — or remove the quarantine flag:
 
@@ -303,9 +307,18 @@ AIRSCRIBE_CODE_SIGN_IDENTITY="Developer ID Application" \
 
 zsh Scripts/notarize-release.sh /path/to/AirScribe.app YOUR_NOTARYTOOL_PROFILE
 
+# Drag-to-install disk image, signed and notarized in its own right
+zsh Scripts/make-dmg.sh /path/to/AirScribe.app YOUR_NOTARYTOOL_PROFILE
+
 AIRSCRIBE_DOWNLOAD_URL_PREFIX=https://github.com/OWNER/REPO/releases/download/v1.0.0/ \
   zsh Scripts/generate-appcast.sh /path/to/release-directory
 ```
+
+`make-dmg.sh` stages the app beside an Applications alias, lays the window out so
+the drag gesture is obvious, compresses the image, signs it, and — when given a
+notarytool profile — notarizes and staples it. Attach the `.dmg` to the GitHub
+release for humans; `generate-appcast.sh` consumes the `.zip` for Sparkle's
+automatic updates, so publish both.
 
 `build-release.sh` refuses to ship a build with debug entitlements or debug dylibs present. `Config/Release.xcconfig.example` documents the non-secret build values.
 
