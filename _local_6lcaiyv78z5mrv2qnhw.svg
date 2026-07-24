@@ -1,0 +1,27 @@
+ <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 164 64">
+  <defs>
+    <linearGradient id="g" x1="5" y1="0" x2="156" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a855f7"/><stop offset="1" stop-color="#ec4899"/>
+    </linearGradient>
+  </defs>
+  <style>
+    .a{stroke-dasharray:140;stroke-dashoffset:140;animation:draw .7s .1s cubic-bezier(.45,0,.2,1) forwards}
+    .beat{stroke-dasharray:230;stroke-dashoffset:230;animation:draw 1.15s .65s cubic-bezier(.45,0,.2,1) forwards}
+    .caret{opacity:0;animation:land .01s 1.85s forwards, blink 1.1s 1.95s steps(1) infinite}
+    @keyframes draw{to{stroke-dashoffset:0}}
+    @keyframes land{to{opacity:1}}
+    @keyframes blink{50%{opacity:0}}
+    @media(prefers-reduced-motion:reduce){.a,.beat{animation:none;stroke-dashoffset:0}.caret{animation:none;opacity:1}}
+  </style>
+  <path class="a" d="M 5 46 C 6 52, 9 57, 13 57 C 20 57, 27 37, 32 22
+           C 34.5 14, 37 9, 40.5 9 C 44 9, 45.5 14, 47 24
+           C 48.5 34, 50 46, 51.5 52 C 52.5 55.5, 55 57.5, 58 55"
+        fill="none" stroke="url(#g)" stroke-width="10"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path class="beat" d="M 21 39 C 31 41.5, 41 40, 50 35 C 57 32, 66 14, 74 14
+           C 82 14, 82 54, 90 54 C 98 54, 98 28, 106 28
+           C 113 28, 114 36, 121 36 L 138 36"
+        fill="none" stroke="url(#g)" stroke-width="10"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="146" y="21" width="10" height="30" rx="5" fill="#ff5f56"/>
+</svg>

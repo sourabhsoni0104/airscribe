@@ -1,0 +1,11 @@
+.DS_Store
+DerivedData/
+.build/
+app/build/
+app/*.xcodeproj/xcuserdata/
+*.xcuserstate
+google-backup-codes-*.txt
+.DS_Store
+app/build/
+app/Config/Release.xcconfig
+*.xcarchive
