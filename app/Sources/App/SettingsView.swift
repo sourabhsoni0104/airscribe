@@ -755,7 +755,24 @@ private struct PrivacySettingsView: View {
                 PermissionRow(title: "Control shortcut & text insertion", granted: permissions.accessibilityGranted) {
                     model.requestControlAndInsertionPermission()
                 }
-                Button("Open Privacy & Security Settings") { permissions.openPrivacySettings() }
+                if let advice = permissions.accessibilityAdvice {
+                    Label(advice, systemImage: permissions.accessibilityGrantIsStale
+                          ? "exclamationmark.triangle.fill"
+                          : "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(permissions.accessibilityGrantIsStale ? .orange : .secondary)
+                }
+                HStack {
+                    Button("Open Privacy & Security Settings") { permissions.openPrivacySettings() }
+                    if permissions.accessibilityGrantIsStale {
+                        Button("Reset Permission") {
+                            if permissions.resetAccessibilityPermission() {
+                                model.requestControlAndInsertionPermission()
+                            }
+                        }
+                        .help("Removes the stale entry so macOS asks again")
+                    }
+                }
             }
             Section("Local data") {
                 Text("Deletes dictation history, meeting transcripts and audio, custom vocabulary, API keys, and all downloaded model files.")

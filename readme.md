@@ -68,7 +68,54 @@ macOS will say it cannot verify the app is free of malware. Pick whichever of th
 
 2. Try to open it, let macOS refuse, then go to System Settings, Privacy & Security, scroll down to the message about AirScribe, and click Open Anyway. Right-clicking and choosing Open stopped working for this in macOS 15, so don't bother with that.
 
-One thing to know before you settle on an unsigned build: macOS ties Accessibility permission to an app's signing identity, and AirScribe needs Accessibility for its hotkey and for typing into other apps. Without a stable identity that permission can be dropped when the app updates, and you would grant it again in System Settings. Nothing breaks for good, but signed builds don't have this problem.
+### Why Accessibility permission keeps getting forgotten
+
+If you have granted Accessibility and AirScribe still says it needs it, with the
+switch clearly turned on in System Settings, this is why.
+
+macOS binds that permission to the app's *designated requirement*. A build with no
+signing certificate has no stable identity, so the requirement is nothing but the
+binary's hash:
+
+```
+designated => cdhash H"dafa4bb50aab51c2f73eb5996677b9432210e4d0"
+```
+
+Rebuild or update the app and that hash changes, so the grant no longer applies.
+The row in System Settings is keyed by file path, so it keeps showing as allowed
+while the app is genuinely untrusted. Toggling the switch does not help, because
+the stale record is still there.
+
+**The fix is to sign the app with any stable certificate, which is free.** If you
+have ever opened Xcode you already have an Apple Development certificate:
+
+```sh
+security find-identity -v -p codesigning
+cd app
+AIRSCRIBE_CODE_SIGN_IDENTITY="Apple Development: you@example.com (TEAMID)" \
+  zsh Scripts/sign-app.sh /Applications/AirScribe.app
+tccutil reset Accessibility com.airscribe.mac
+```
+
+Grant Accessibility once more afterwards and it stays granted, because the
+requirement is now anchored to your certificate instead of to one build:
+
+```
+designated => identifier "com.airscribe.mac" and anchor apple generic
+  and certificate leaf[subject.CN] = "Apple Development: ..."
+```
+
+No Xcode? Make a self-signed certificate once in Keychain Access, under
+Certificate Assistant, Create a Certificate, with Certificate Type set to Code
+Signing, then pass its name instead. `Scripts/sign-app.sh` documents this.
+
+None of this helps Gatekeeper, which still wants a Developer ID and notarization.
+It only stops macOS from forgetting the permission.
+
+AirScribe detects this situation on its own too. When it has been trusted before
+and is not now, the Privacy pane explains that the entry has to be removed rather
+than toggled, and offers a Reset Permission button that clears the stale record
+for you.
 
 If you would rather avoid all of it, build from source. Apps you compile yourself are never quarantined.
 

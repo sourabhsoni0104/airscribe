@@ -91,8 +91,15 @@ private struct OnboardingView: View {
                         title: "Control & insertion",
                         detail: "One macOS permission enables your dictation shortcut and places text in other apps.",
                         granted: permissions.accessibilityGranted,
-                        actionTitle: "Allow Accessibility"
+                        actionTitle: permissions.accessibilityGrantIsStale
+                            ? "Fix Accessibility"
+                            : "Allow Accessibility"
                     ) {
+                        // A stale grant cannot be repaired by asking again: macOS
+                        // already lists the app as allowed. Clear the record first.
+                        if permissions.accessibilityGrantIsStale {
+                            permissions.resetAccessibilityPermission()
+                        }
                         model.requestControlAndInsertionPermission()
                     }
                     SetupCard(
