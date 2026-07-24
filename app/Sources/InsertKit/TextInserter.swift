@@ -4,31 +4,69 @@ import Carbon.HIToolbox
 import CoreGraphics
 
 struct TextInserter: Sendable {
+    enum InsertionResult: Sendable {
+        case inserted(InsertionHandle)
+        case copiedToClipboard
+
+        var handle: InsertionHandle? {
+            switch self {
+            case let .inserted(handle):
+                return handle
+            case .copiedToClipboard:
+                return nil
+            }
+        }
+
+        var wasCopiedToClipboard: Bool {
+            if case .copiedToClipboard = self {
+                return true
+            }
+            return false
+        }
+    }
+
     struct PasteboardSnapshot: @unchecked Sendable {
         let items: [[NSPasteboard.PasteboardType: Data]]
     }
 
     struct InsertionHandle: @unchecked Sendable {
+        let id: UUID
         fileprivate let element: AXUIElement?
         fileprivate let processIdentifier: pid_t
         fileprivate let insertionLocation: Int?
         let insertedText: String
         fileprivate let prefix: String?
         fileprivate let suffix: String?
+        fileprivate let beforeAnchor: String
+        fileprivate let afterAnchor: String
+        fileprivate let unaffectedCharacterCount: Int?
     }
 
     @MainActor
     @discardableResult
-    func insert(_ text: String) throws -> InsertionHandle {
-        guard AXIsProcessTrusted() else { throw AirScribeError.accessibilityPermissionDenied }
+    func insert(_ text: String) throws -> InsertionResult {
+        // Clipboard fallback must remain available even when macOS has stale or
+        // missing Accessibility authorization. Direct insertion still requires it.
+        guard !SecureInputGuard.isSecure(nil) else { throw AirScribeError.secureInputActive }
+        guard AXIsProcessTrusted() else {
+            try copyToClipboard(text)
+            return .copiedToClipboard
+        }
 
         let element = focusedElement()
         guard !SecureInputGuard.isSecure(element) else { throw AirScribeError.secureInputActive }
+        guard let element, isEditableTextElement(element) else {
+            try copyToClipboard(text)
+            return .copiedToClipboard
+        }
+
         var processIdentifier: pid_t = 0
-        if let element { AXUIElementGetPid(element, &processIdentifier) }
-        let selection = element.flatMap(selectedRange)
+        AXUIElementGetPid(element, &processIdentifier)
+        let selection = selectedRange(of: element)
         let insertionLocation = selection.map(\.location)
-        let originalValue = element.flatMap(stringValue)
+        let originalValue = stringValue(of: element)
+        let originalCharacterCount = originalValue.map { ($0 as NSString).length }
+            ?? characterCount(of: element)
         let boundaries = originalValue.flatMap { value -> (String, String)? in
             guard let selection else { return nil }
             let source = value as NSString
@@ -42,6 +80,11 @@ struct TextInserter: Sendable {
                 source.substring(from: selection.location + selection.length)
             )
         }
+        let anchors = contextAnchors(
+            for: element,
+            selection: selection,
+            boundaries: boundaries
+        )
 
         let pasteboard = NSPasteboard.general
         let snapshot = snapshotPasteboard(pasteboard)
@@ -68,14 +111,34 @@ struct TextInserter: Sendable {
                 restorePasteboard(snapshot, to: pasteboard)
             }
         }
-        return InsertionHandle(
+        return .inserted(InsertionHandle(
+            id: UUID(),
             element: element,
             processIdentifier: processIdentifier,
             insertionLocation: insertionLocation,
             insertedText: text,
             prefix: boundaries?.0,
-            suffix: boundaries?.1
-        )
+            suffix: boundaries?.1,
+            beforeAnchor: anchors.before,
+            afterAnchor: anchors.after,
+            unaffectedCharacterCount: originalCharacterCount.map {
+                max(0, $0 - (selection?.length ?? 0))
+            }
+        ))
+    }
+
+    @MainActor
+    func copyToClipboard(_ text: String) throws {
+        guard Self.write(text, to: .general) else {
+            throw AirScribeError.clipboardCopyFailed
+        }
+    }
+
+    @MainActor
+    static func write(_ text: String, to pasteboard: NSPasteboard) -> Bool {
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else { return false }
+        return pasteboard.string(forType: .string) == text
     }
 
     @MainActor
@@ -106,12 +169,16 @@ struct TextInserter: Sendable {
             return nil
         }
         return InsertionHandle(
+            id: handle.id,
             element: handle.element,
             processIdentifier: handle.processIdentifier,
             insertionLocation: handle.insertionLocation,
             insertedText: replacement,
             prefix: handle.prefix,
-            suffix: handle.suffix
+            suffix: handle.suffix,
+            beforeAnchor: handle.beforeAnchor,
+            afterAnchor: handle.afterAnchor,
+            unaffectedCharacterCount: handle.unaffectedCharacterCount
         )
     }
 
@@ -119,30 +186,100 @@ struct TextInserter: Sendable {
     func correctedText(for handle: InsertionHandle) -> String? {
         guard AXIsProcessTrusted(),
               let element = handle.element,
-              let current = focusedElement(),
-              !SecureInputGuard.isSecure(current),
-              CFEqual(element, current),
-              let prefix = handle.prefix,
-              let suffix = handle.suffix,
-              let value = stringValue(of: current) else { return nil }
+              !SecureInputGuard.isSecure(element) else { return nil }
+        if let current = focusedElement(), SecureInputGuard.isSecure(current) {
+            return nil
+        }
 
         var currentProcessIdentifier: pid_t = 0
-        AXUIElementGetPid(current, &currentProcessIdentifier)
+        AXUIElementGetPid(element, &currentProcessIdentifier)
         guard currentProcessIdentifier == handle.processIdentifier else { return nil }
 
-        let valueNSString = value as NSString
-        let prefixLength = (prefix as NSString).length
-        let suffixLength = (suffix as NSString).length
-        guard valueNSString.length >= prefixLength + suffixLength,
-              valueNSString.substring(to: prefixLength) == prefix,
-              valueNSString.substring(from: valueNSString.length - suffixLength) == suffix else { return nil }
-        let observed = valueNSString.substring(
-            with: NSRange(
-                location: prefixLength,
-                length: valueNSString.length - prefixLength - suffixLength
-            )
-        )
+        if let prefix = handle.prefix,
+           let suffix = handle.suffix,
+           let value = stringValue(of: element) {
+            let valueNSString = value as NSString
+            let prefixLength = (prefix as NSString).length
+            let suffixLength = (suffix as NSString).length
+            if valueNSString.length >= prefixLength + suffixLength,
+               valueNSString.substring(to: prefixLength) == prefix,
+               valueNSString.substring(from: valueNSString.length - suffixLength) == suffix {
+                let observed = valueNSString.substring(
+                    with: NSRange(
+                        location: prefixLength,
+                        length: valueNSString.length - prefixLength - suffixLength
+                    )
+                )
+                return observed == handle.insertedText ? nil : observed
+            }
+        }
+
+        guard let insertionLocation = handle.insertionLocation,
+              let snapshot = correctionSnapshot(
+                  for: element,
+                  insertionLocation: insertionLocation,
+                  insertedLength: (handle.insertedText as NSString).length,
+                  beforeAnchor: handle.beforeAnchor,
+                  afterAnchor: handle.afterAnchor,
+                  unaffectedCharacterCount: handle.unaffectedCharacterCount
+              ),
+              let observed = Self.textBetweenAnchors(
+                  in: snapshot.text,
+                  insertionOffset: insertionLocation - snapshot.baseLocation,
+                  beforeAnchor: handle.beforeAnchor,
+                  afterAnchor: handle.afterAnchor,
+                  inferredEndOffset: snapshot.inferredEndLocation.map {
+                      $0 - snapshot.baseLocation
+                  },
+                  cursorOffset: snapshot.cursorLocation.map { $0 - snapshot.baseLocation }
+              ) else {
+            return nil
+        }
         return observed == handle.insertedText ? nil : observed
+    }
+
+    static func textBetweenAnchors(
+        in snapshot: String,
+        insertionOffset: Int,
+        beforeAnchor: String,
+        afterAnchor: String,
+        inferredEndOffset: Int? = nil,
+        cursorOffset: Int?
+    ) -> String? {
+        let source = snapshot as NSString
+        guard insertionOffset >= 0, insertionOffset <= source.length else { return nil }
+
+        var start = insertionOffset
+        if !beforeAnchor.isEmpty {
+            let searchRange = NSRange(location: 0, length: insertionOffset)
+            let found = source.range(
+                of: beforeAnchor,
+                options: [.backwards],
+                range: searchRange
+            )
+            guard found.location != NSNotFound else { return nil }
+            start = NSMaxRange(found)
+        }
+
+        let end: Int
+        if !afterAnchor.isEmpty {
+            let searchRange = NSRange(location: start, length: source.length - start)
+            let found = source.range(of: afterAnchor, range: searchRange)
+            guard found.location != NSNotFound else { return nil }
+            end = found.location
+        } else if let inferredEndOffset,
+                  inferredEndOffset >= start,
+                  inferredEndOffset <= source.length {
+            end = inferredEndOffset
+        } else if let cursorOffset,
+                  cursorOffset >= start,
+                  cursorOffset <= source.length {
+            end = cursorOffset
+        } else {
+            end = source.length
+        }
+        guard end >= start else { return nil }
+        return source.substring(with: NSRange(location: start, length: end - start))
     }
 
     @MainActor
@@ -182,6 +319,45 @@ struct TextInserter: Sendable {
     }
 
     @MainActor
+    private func isEditableTextElement(_ element: AXUIElement) -> Bool {
+        let role = stringAttribute(kAXRoleAttribute, of: element)
+        let subrole = stringAttribute(kAXSubroleAttribute, of: element)
+        if Self.isTextInputRole(role: role, subrole: subrole) {
+            return true
+        }
+
+        // Web content-editable controls do not always expose a standard text role.
+        var isSettable = DarwinBoolean(false)
+        let result = AXUIElementIsAttributeSettable(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            &isSettable
+        )
+        return result == .success && isSettable.boolValue
+    }
+
+    static func isTextInputRole(role: String?, subrole: String?) -> Bool {
+        [role, subrole]
+            .compactMap { $0?.lowercased() }
+            .contains { value in
+                value.contains("textfield")
+                    || value.contains("textarea")
+                    || value.contains("textinput")
+                    || value.contains("searchfield")
+                    || value == "axcombobox"
+            }
+    }
+
+    @MainActor
+    private func stringAttribute(_ attribute: String, of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+            return nil
+        }
+        return value as? String
+    }
+
+    @MainActor
     private func selectedRange(of element: AXUIElement) -> CFRange? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
@@ -195,6 +371,119 @@ struct TextInserter: Sendable {
         var range = CFRange()
         guard AXValueGetValue(rangeValue, .cfRange, &range) else { return nil }
         return range
+    }
+
+    @MainActor
+    private func contextAnchors(
+        for element: AXUIElement,
+        selection: CFRange?,
+        boundaries: (String, String)?
+    ) -> (before: String, after: String) {
+        let anchorLength = 48
+        if let boundaries {
+            let before = boundaries.0 as NSString
+            let after = boundaries.1 as NSString
+            return (
+                before.substring(from: max(0, before.length - anchorLength)),
+                after.substring(to: min(anchorLength, after.length))
+            )
+        }
+        guard let selection else { return ("", "") }
+        let beforeLength = min(anchorLength, max(0, selection.location))
+        let before = string(
+            in: CFRange(location: selection.location - beforeLength, length: beforeLength),
+            of: element
+        ) ?? ""
+        let afterStart = selection.location + selection.length
+        let afterLength = characterCount(of: element)
+            .map { min(anchorLength, max(0, $0 - afterStart)) } ?? 0
+        let after = afterLength > 0
+            ? string(in: CFRange(location: afterStart, length: afterLength), of: element) ?? ""
+            : ""
+        return (before, after)
+    }
+
+    private struct CorrectionSnapshot {
+        let text: String
+        let baseLocation: Int
+        let cursorLocation: Int?
+        let inferredEndLocation: Int?
+    }
+
+    @MainActor
+    private func correctionSnapshot(
+        for element: AXUIElement,
+        insertionLocation: Int,
+        insertedLength: Int,
+        beforeAnchor: String,
+        afterAnchor: String,
+        unaffectedCharacterCount: Int?
+    ) -> CorrectionSnapshot? {
+        let focused = focusedElement()
+        let cursor = focused.flatMap { current -> Int? in
+            guard CFEqual(current, element),
+                  let range = selectedRange(of: current),
+                  range.length == 0 else { return nil }
+            return range.location
+        }
+        let count = characterCount(of: element)
+        let inferredEnd = count.flatMap { count -> Int? in
+            guard let unaffectedCharacterCount else { return nil }
+            return insertionLocation + max(0, count - unaffectedCharacterCount)
+        }
+        if let value = stringValue(of: element) {
+            return CorrectionSnapshot(
+                text: value,
+                baseLocation: 0,
+                cursorLocation: cursor,
+                inferredEndLocation: inferredEnd
+            )
+        }
+
+        guard let count else { return nil }
+        let beforeLength = (beforeAnchor as NSString).length
+        let afterLength = (afterAnchor as NSString).length
+        let start = max(0, insertionLocation - beforeLength)
+        let expectedEnd = insertionLocation + insertedLength + afterLength + 64
+        let cursorEnd = cursor.map { $0 + afterLength + 16 } ?? 0
+        let inferredReadEnd = inferredEnd.map { $0 + afterLength + 16 } ?? 0
+        let end = min(count, max(expectedEnd, max(cursorEnd, inferredReadEnd)))
+        guard end >= start,
+              let text = string(
+                  in: CFRange(location: start, length: end - start),
+                  of: element
+              ) else { return nil }
+        return CorrectionSnapshot(
+            text: text,
+            baseLocation: start,
+            cursorLocation: cursor,
+            inferredEndLocation: inferredEnd
+        )
+    }
+
+    @MainActor
+    private func characterCount(of element: AXUIElement) -> Int? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            "AXNumberOfCharacters" as CFString,
+            &value
+        ) == .success else { return nil }
+        return (value as? NSNumber)?.intValue
+    }
+
+    @MainActor
+    private func string(in range: CFRange, of element: AXUIElement) -> String? {
+        var mutableRange = range
+        guard let rangeValue = AXValueCreate(.cfRange, &mutableRange) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXStringForRangeParameterizedAttribute as CFString,
+            rangeValue,
+            &value
+        ) == .success else { return nil }
+        return value as? String
     }
 
     @MainActor

@@ -4,7 +4,9 @@ struct PauseAwarePunctuation {
     private struct Token {
         let word: String
         let normalized: String
-        let trailingPunctuation: Character?
+        let range: NSRange
+        let trailingPunctuation: String?
+        let trailingPunctuationRange: NSRange?
     }
 
     static func apply(
@@ -23,32 +25,60 @@ struct PauseAwarePunctuation {
 
         let timingIndices = alignGuideToTimings(guide: guide, timings: timings)
         let targetToGuide = Dictionary(uniqueKeysWithValues: matches.map { ($0.target, $0.guide) })
-        var rendered: [String] = []
-        rendered.reserveCapacity(target.count)
+        let thresholds = pauseThresholds(timings: timings)
+        var punctuation = target.map(\.trailingPunctuation)
 
         for index in target.indices {
-            var word = target[index].word
-            let guideIndex = targetToGuide[index]
-            let punctuation: Character?
-            if let guideIndex {
-                punctuation = punctuationAfter(
+            if let guideIndex = targetToGuide[index] {
+                punctuation[index] = punctuationAfter(
                     guideIndex: guideIndex,
                     guide: guide,
                     timingIndices: timingIndices,
                     timings: timings,
-                    audioDuration: audioDuration
+                    audioDuration: audioDuration,
+                    thresholds: thresholds,
+                    targetPunctuation: target[index].trailingPunctuation
                 )
-            } else {
-                punctuation = target[index].trailingPunctuation
+            }
+        }
+
+        let source = transcript as NSString
+        var edits: [(range: NSRange, replacement: String)] = []
+        var capitalizeNext = true
+        for index in target.indices {
+            let token = target[index]
+            if capitalizeNext, let capitalized = capitalizedWord(token.word), capitalized != token.word {
+                edits.append((token.range, capitalized))
             }
 
-            if index == 0 || rendered.last?.last.map({ ".!?".contains($0) }) == true {
-                word = uppercaseFirstLetter(in: word)
+            if let desired = punctuation[index], desired != token.trailingPunctuation {
+                if let punctuationRange = token.trailingPunctuationRange {
+                    edits.append((punctuationRange, desired))
+                } else {
+                    edits.append((NSRange(location: NSMaxRange(token.range), length: 0), desired))
+                }
             }
-            if let punctuation { word.append(punctuation) }
-            rendered.append(word)
+
+            let boundary = punctuation[index] ?? token.trailingPunctuation
+            capitalizeNext = boundary.map(isSentenceTerminal) ?? false
+            if !capitalizeNext, index + 1 < target.count {
+                let gapStart = NSMaxRange(token.range)
+                let gapEnd = target[index + 1].range.location
+                if gapEnd > gapStart {
+                    let gap = source.substring(with: NSRange(location: gapStart, length: gapEnd - gapStart))
+                    capitalizeNext = gap.contains("\n")
+                }
+            }
         }
-        return rendered.joined(separator: " ")
+
+        let output = NSMutableString(string: transcript)
+        for edit in edits.sorted(by: {
+            if $0.range.location == $1.range.location { return $0.range.length > $1.range.length }
+            return $0.range.location > $1.range.location
+        }) {
+            output.replaceCharacters(in: edit.range, with: edit.replacement)
+        }
+        return output as String
     }
 
     private static func punctuationAfter(
@@ -56,8 +86,10 @@ struct PauseAwarePunctuation {
         guide: [Token],
         timingIndices: [Int: Int],
         timings: [TranscribedWordTiming],
-        audioDuration: TimeInterval?
-    ) -> Character? {
+        audioDuration: TimeInterval?,
+        thresholds: (comma: TimeInterval, sentence: TimeInterval),
+        targetPunctuation: String?
+    ) -> String? {
         let existing = guide[guideIndex].trailingPunctuation
         if guideIndex == guide.count - 1,
            isHangingEnding(guide[guideIndex].normalized),
@@ -66,33 +98,40 @@ struct PauseAwarePunctuation {
             let trailingSilence = audioDuration - timings[timingIndex].endTime
             if trailingSilence >= 0, trailingSilence < 0.38 { return "…" }
         }
-        if existing.map({ "!?;:".contains($0) }) == true { return existing }
+        if let existing { return existing }
         guard guideIndex + 1 < guide.count,
               let timingIndex = timingIndices[guideIndex],
               let nextTimingIndex = timingIndices[guideIndex + 1],
-              nextTimingIndex > timingIndex else { return existing }
+              nextTimingIndex > timingIndex else { return targetPunctuation }
 
         let pause = timings[nextTimingIndex].startTime - timings[timingIndex].endTime
-        guard pause.isFinite, pause >= 0 else { return existing }
+        guard pause.isFinite, pause >= 0 else { return targetPunctuation }
         let next = guide[guideIndex + 1].normalized
-        let incompleteBefore = [
+        let current = guide[guideIndex].normalized
+        let incompleteBefore: Set<String> = [
             "a", "an", "the", "to", "of", "for", "with", "at", "in", "on", "from",
-            "my", "your", "our", "their", "this", "that", "these", "those"
-        ].contains(guide[guideIndex].normalized)
-        let tightlyConnectedAfter = [
-            "to", "of", "for", "with", "that", "which", "who", "because", "if", "when"
-        ].contains(next)
+            "my", "your", "our", "their", "this", "that", "these", "those", "and", "or",
+            "but", "because", "if", "when", "while", "although", "is", "are", "was", "were",
+            "have", "has", "had", "will", "would", "can", "could", "should"
+        ]
+        let tightlyConnectedAfter: Set<String> = [
+            "to", "of", "for", "with", "that", "which", "who", "because", "if", "when",
+            "while", "than", "and", "or"
+        ]
 
-        if pause >= 1.05, !incompleteBefore {
-            if ["and", "but", "or", "so", "because"].contains(next) || tightlyConnectedAfter {
-                return existing ?? ","
+        if pause >= thresholds.sentence, !incompleteBefore.contains(current) {
+            if tightlyConnectedAfter.contains(next) {
+                return targetPunctuation ?? ","
             }
-            return existing == "?" ? "?" : "."
+            return terminalPunctuation(before: guideIndex, guide: guide)
         }
-        if pause >= 0.48, !incompleteBefore, !tightlyConnectedAfter {
-            return existing ?? ","
+        if pause >= thresholds.comma,
+           !incompleteBefore.contains(current),
+           !tightlyConnectedAfter.contains(next),
+           clauseWordCount(endingAt: guideIndex, guide: guide) >= 3 {
+            return targetPunctuation ?? ","
         }
-        return existing
+        return targetPunctuation
     }
 
     private static func isHangingEnding(_ word: String) -> Bool {
@@ -101,6 +140,50 @@ struct PauseAwarePunctuation {
             "but", "because", "if", "when", "that", "which", "who", "my", "your", "our",
             "their", "this", "these", "those"
         ].contains(word)
+    }
+
+    private static func pauseThresholds(
+        timings: [TranscribedWordTiming]
+    ) -> (comma: TimeInterval, sentence: TimeInterval) {
+        let gaps = zip(timings, timings.dropFirst())
+            .map { $1.startTime - $0.endTime }
+            .filter { $0.isFinite && $0 >= 0 && $0 < 1.5 }
+            .sorted()
+        guard !gaps.isEmpty else { return (0.48, 1.05) }
+        let median = gaps[gaps.count / 2]
+        return (
+            comma: min(0.68, max(0.38, median * 2.4)),
+            sentence: min(1.15, max(0.72, median * 4.0))
+        )
+    }
+
+    private static func terminalPunctuation(before guideIndex: Int, guide: [Token]) -> String {
+        var sentenceStart = guideIndex
+        while sentenceStart > 0 {
+            if guide[sentenceStart - 1].trailingPunctuation.map(isSentenceTerminal) == true {
+                break
+            }
+            sentenceStart -= 1
+        }
+        let first = guide[sentenceStart].normalized
+        let questionStarters: Set<String> = [
+            "who", "what", "when", "where", "why", "how", "can", "could", "would", "will",
+            "should", "do", "does", "did", "is", "are", "am", "was", "were", "have", "has", "had"
+        ]
+        return questionStarters.contains(first) ? "?" : "."
+    }
+
+    private static func clauseWordCount(endingAt guideIndex: Int, guide: [Token]) -> Int {
+        var start = guideIndex
+        while start > 0 {
+            if guide[start - 1].trailingPunctuation != nil { break }
+            start -= 1
+        }
+        return guideIndex - start + 1
+    }
+
+    private static func isSentenceTerminal(_ punctuation: String) -> Bool {
+        punctuation.contains { ".!?…".contains($0) }
     }
 
     private static func tokens(in text: String) -> [Token] {
@@ -115,13 +198,45 @@ struct PauseAwarePunctuation {
             let between = end < nextStart
                 ? string.substring(with: NSRange(location: end, length: nextStart - end))
                 : ""
-            let punctuation = between.last(where: { ",;:.!?…".contains($0) })
+            let punctuation = trailingPunctuation(
+                in: between,
+                globalLocation: end,
+                isFinalToken: index == matches.count - 1
+            )
             return Token(
                 word: word,
                 normalized: word.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current),
-                trailingPunctuation: punctuation
+                range: match.range,
+                trailingPunctuation: punctuation?.value,
+                trailingPunctuationRange: punctuation?.range
             )
         }
+    }
+
+    private static func trailingPunctuation(
+        in gap: String,
+        globalLocation: Int,
+        isFinalToken: Bool
+    ) -> (value: String, range: NSRange)? {
+        guard let expression = try? NSRegularExpression(pattern: #"[,:;.!?…]+"#) else { return nil }
+        let nsGap = gap as NSString
+        guard let match = expression.firstMatch(
+            in: gap,
+            range: NSRange(location: 0, length: nsGap.length)
+        ) else { return nil }
+        let remainderStart = NSMaxRange(match.range)
+        let remainder = remainderStart < nsGap.length
+            ? nsGap.substring(from: remainderStart)
+            : ""
+        let value = nsGap.substring(with: match.range)
+        let isBoundary = isFinalToken
+            || remainder.contains(where: \.isWhitespace)
+            || value.contains(where: { "!?…".contains($0) })
+        guard isBoundary else { return nil }
+        return (
+            value,
+            NSRange(location: globalLocation + match.range.location, length: match.range.length)
+        )
     }
 
     private static func alignedMatches(
@@ -184,7 +299,7 @@ struct PauseAwarePunctuation {
         return output
     }
 
-    private static func uppercaseFirstLetter(in word: String) -> String {
+    private static func capitalizedWord(_ word: String) -> String? {
         guard let index = word.firstIndex(where: \Character.isLetter) else { return word }
         var output = word
         output.replaceSubrange(index ... index, with: String(word[index]).uppercased())
@@ -227,9 +342,12 @@ struct BasicTextEnhancer: Sendable {
             guard !Self.isCaseOnlyCorrectionThatShouldNotPropagate(heard: heard, correction: correction) else {
                 continue
             }
-            let escaped = NSRegularExpression.escapedPattern(for: heard)
+            let escaped = heard
+                .split(whereSeparator: \.isWhitespace)
+                .map { NSRegularExpression.escapedPattern(for: String($0)) }
+                .joined(separator: #"\s+"#)
             text = text.replacingOccurrences(
-                of: "(?i)\\b\(escaped)\\b",
+                of: #"(?i)(?<![\p{L}\p{N}])"# + escaped + #"(?![\p{L}\p{N}])"#,
                 with: correction,
                 options: .regularExpression
             )
@@ -445,18 +563,26 @@ struct CorrectionLearner: Sendable {
         let correctedEnd = correctedWords.count - suffixCount
         let removed = Array(originalWords[prefixCount ..< originalEnd])
         let added = Array(correctedWords[prefixCount ..< correctedEnd])
-        guard !added.isEmpty, added.count <= 3, removed.count <= 3 else { return nil }
+        guard !added.isEmpty, added.count <= 4, removed.count <= 4 else { return nil }
+        // An insertion bounded by unchanged words on both sides can be a missing
+        // name or term. Text added before or after the dictation is ordinary
+        // continued typing and must not be learned.
+        if removed.isEmpty, prefixCount == 0 || suffixCount == 0 {
+            return nil
+        }
 
         var replacements: [String: String] = [:]
-        if removed.count == 1, added.count == 1, !equal(removed[0], added[0]) {
-            let heard = removed[0].lowercased()
-            let correction = added[0]
-            let caseOnlyChange = removed[0].caseInsensitiveCompare(correction) == .orderedSame
+        if !removed.isEmpty {
+            let heard = removed.joined(separator: " ").lowercased()
+            let correction = added.joined(separator: " ")
+            let caseOnlyChange = removed.count == 1
+                && added.count == 1
+                && removed[0].caseInsensitiveCompare(correction) == .orderedSame
                 && removed[0] != correction
             if caseOnlyChange, (heard.count <= 2 || Self.commonWords.contains(heard)) {
                 return nil
             }
-            replacements[removed[0].lowercased()] = added[0]
+            replacements[heard] = correction
         }
         let vocabulary = added.filter { word in
             let normalized = word.lowercased()

@@ -115,6 +115,27 @@ struct NotchView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Color(red: 0.65, green: 0.95, blue: 0.45))
                 .padding(.top, NotchLayout.expandedContentTopInset(on: NotchLayout.notchedScreen()))
+        case .copied:
+            VStack(spacing: 3) {
+                Label("Copied", systemImage: "doc.on.clipboard.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.65, green: 0.95, blue: 0.45))
+                Text("No text box found — paste with ⌘V")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+            .padding(.top, NotchLayout.expandedContentTopInset(on: NotchLayout.notchedScreen()))
+        case let .learned(heard, correction):
+            VStack(spacing: 3) {
+                Label("Learned", systemImage: "brain.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.65, green: 0.95, blue: 0.45))
+                Text("“\(heard)” → “\(correction)”")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(1)
+            }
+            .padding(.top, NotchLayout.expandedContentTopInset(on: NotchLayout.notchedScreen()))
         case let .error(message):
             HStack(spacing: 9) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -193,6 +214,14 @@ enum NotchLayout {
             return NSSize(width: 270, height: physicalNotchHeight(on: screen) + 44)
         case .done:
             return NSSize(width: 150, height: physicalNotchHeight(on: screen) + 36)
+        case .copied:
+            return NSSize(width: 280, height: physicalNotchHeight(on: screen) + 50)
+        case let .learned(heard, correction):
+            let contentLength = min(44, heard.count + correction.count)
+            return NSSize(
+                width: max(250, CGFloat(contentLength * 7)),
+                height: physicalNotchHeight(on: screen) + 50
+            )
         case .error:
             return NSSize(width: 360, height: physicalNotchHeight(on: screen) + 48)
         }

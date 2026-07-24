@@ -38,7 +38,13 @@ final class AppModel: ObservableObject {
         didSet { defaults.set(customVocabulary, forKey: Keys.vocabulary) }
     }
     @Published var learnFromCorrections: Bool {
-        didSet { defaults.set(learnFromCorrections, forKey: Keys.learnFromCorrections) }
+        didSet {
+            defaults.set(learnFromCorrections, forKey: Keys.learnFromCorrections)
+            if !learnFromCorrections {
+                correctionLearningTasks.values.forEach { $0.cancel() }
+                correctionLearningTasks = [:]
+            }
+        }
     }
     @Published private(set) var learnedCorrections: [String: String] {
         didSet { persist(learnedCorrections, key: Keys.learnedCorrections) }
@@ -126,7 +132,8 @@ final class AppModel: ObservableObject {
     private var modelStateObservation: AnyCancellable?
     private var applicationObservation: AnyCancellable?
     private var permissionObservation: AnyCancellable?
-    private var correctionLearningTask: Task<Void, Never>?
+    private var correctionLearningTasks: [UUID: Task<Void, Never>] = [:]
+    private var learningFeedbackTask: Task<Void, Never>?
     private var activeContext: ContextSnapshot = .empty
 
     private enum Keys {
@@ -432,12 +439,14 @@ final class AppModel: ObservableObject {
             let requiresPolishedInsertion = (waitForPolish && modeUsesGenerativePolish)
                 || invocation != nil
                 || emailPolishAvailable
-            let insertionHandle: TextInserter.InsertionHandle?
+            let initialInsertion: TextInserter.InsertionResult?
             if requiresPolishedInsertion {
-                insertionHandle = nil
+                initialInsertion = nil
             } else {
-                insertionHandle = try textInserter.insert(immediateText)
+                initialInsertion = try textInserter.insert(immediateText)
             }
+            let insertionHandle = initialInsertion?.handle
+            var copiedToClipboard = initialInsertion?.wasCopiedToClipboard ?? false
             var enhanced = immediateText
             let shouldPolishQuestion = selectedMode == .email
             if invocation == nil,
@@ -483,7 +492,14 @@ final class AppModel: ObservableObject {
             var insertedText = immediateText
             var finalInsertionHandle = insertionHandle
             if requiresPolishedInsertion {
-                finalInsertionHandle = try textInserter.insert(enhanced)
+                let result = try textInserter.insert(enhanced)
+                finalInsertionHandle = result.handle
+                copiedToClipboard = result.wasCopiedToClipboard
+                insertedText = enhanced
+            } else if copiedToClipboard {
+                if enhanced != immediateText {
+                    try textInserter.copyToClipboard(enhanced)
+                }
                 insertedText = enhanced
             } else if enhanced != immediateText, let insertionHandle {
                 // Let the original paste settle, then replace only if the same text and field are untouched.
@@ -516,12 +532,18 @@ final class AppModel: ObservableObject {
             recovery.complete()
             activeContext = .empty
             partialTranscript = insertedText
-            phase = .done
             hotkey.reset()
             dictationStartupInFlight = false
             pendingDictationEnd = false
-            try? await Task.sleep(for: .milliseconds(650))
-            if phase == .done { phase = .idle }
+            if copiedToClipboard {
+                phase = .copied
+                try? await Task.sleep(for: .milliseconds(1_500))
+                if phase == .copied { phase = .idle }
+            } else {
+                phase = .done
+                try? await Task.sleep(for: .milliseconds(650))
+                if phase == .done { phase = .idle }
+            }
         } catch {
             removeActiveAudio()
             recovery.complete()
@@ -560,30 +582,71 @@ final class AppModel: ObservableObject {
         customVocabulary.remove(atOffsets: offsets)
     }
 
+    func removeLearnedCorrection(_ heard: String) {
+        learnedCorrections.removeValue(forKey: heard)
+    }
+
     private func observeCorrection(to handle: TextInserter.InsertionHandle) {
-        correctionLearningTask?.cancel()
-        correctionLearningTask = Task { @MainActor [weak self] in
+        if correctionLearningTasks.count >= 4,
+           let oldestID = correctionLearningTasks.keys.first {
+            correctionLearningTasks.removeValue(forKey: oldestID)?.cancel()
+        }
+        correctionLearningTasks[handle.id]?.cancel()
+        correctionLearningTasks[handle.id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.correctionLearningTasks[handle.id] = nil }
             var lastObserved: String?
             var stableObservations = 0
-            for _ in 0 ..< 60 {
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled, let self, self.learnFromCorrections else { return }
-                guard let observed = self.textInserter.correctedText(for: handle) else { continue }
+            // Keep a small number of independent observations alive so starting a
+            // later dictation does not discard a correction still being edited.
+            for _ in 0 ..< 400 {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, self.learnFromCorrections else { return }
+                guard let observed = self.textInserter.correctedText(for: handle),
+                      let learning = self.correctionLearner.learn(
+                          from: handle.insertedText,
+                          to: observed
+                      ) else {
+                    continue
+                }
                 if observed == lastObserved {
                     stableObservations += 1
                 } else {
                     lastObserved = observed
                     stableObservations = 1
                 }
-                guard stableObservations >= 4,
-                      let learning = self.correctionLearner.learn(from: handle.insertedText, to: observed) else {
-                    continue
-                }
+                guard stableObservations >= 5 else { continue }
                 for (heard, correction) in learning.replacements {
                     self.learnedCorrections[heard] = correction
                 }
                 learning.vocabulary.forEach(self.addVocabularyTerm)
+                if let learned = learning.replacements.sorted(by: { $0.key < $1.key }).first {
+                    self.showLearnedFeedback(heard: learned.key, correction: learned.value)
+                }
                 return
+            }
+        }
+    }
+
+    private func showLearnedFeedback(heard: String, correction: String) {
+        learningFeedbackTask?.cancel()
+        learningFeedbackTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Never cover recording or processing state. If learning completes at
+            // that moment, show it as soon as dictation has finished.
+            for _ in 0 ..< 40 {
+                switch self.phase {
+                case .listening, .processing:
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard !Task.isCancelled else { return }
+                default:
+                    self.phase = .learned(heard: heard, correction: correction)
+                    try? await Task.sleep(for: .seconds(2.4))
+                    if self.phase == .learned(heard: heard, correction: correction) {
+                        self.phase = .idle
+                    }
+                    return
+                }
             }
         }
     }
@@ -687,8 +750,10 @@ final class AppModel: ObservableObject {
         preferExtendedLanguages = false
         customVocabulary = []
         learnFromCorrections = true
-        correctionLearningTask?.cancel()
-        correctionLearningTask = nil
+        correctionLearningTasks.values.forEach { $0.cancel() }
+        correctionLearningTasks = [:]
+        learningFeedbackTask?.cancel()
+        learningFeedbackTask = nil
         learnedCorrections = [:]
         onboardingComplete = false
         modeInstructions = Dictionary(

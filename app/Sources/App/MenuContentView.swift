@@ -132,6 +132,8 @@ struct MenuContentView: View {
         case .listening: "Listening and recording… release \(model.dictationHotkey.title), or press again to stop"
         case .processing: "Transcribing and cleaning…"
         case .done: "Text inserted"
+        case .copied: "No text box found — copied to clipboard"
+        case let .learned(heard, correction): "Learned “\(heard)” → “\(correction)”"
         case let .error(message): message
         }
     }
@@ -142,6 +144,8 @@ struct MenuContentView: View {
         case .listening: "waveform"
         case .processing: "ellipsis.circle"
         case .done: "checkmark.circle.fill"
+        case .copied: "doc.on.clipboard.fill"
+        case .learned: "brain.fill"
         case .error: "exclamationmark.triangle"
         }
     }

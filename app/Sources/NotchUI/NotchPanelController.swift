@@ -18,7 +18,10 @@ final class NotchPanelController {
         phaseObserver = model.$phase
             .combineLatest(model.$partialTranscript.map { !$0.isEmpty }.removeDuplicates())
             .sink { [weak self] state in
-                MainActor.assumeIsolated {
+                // Publishing can occur while SwiftUI is laying out the hosted
+                // content. Defer the AppKit frame mutation to the next main-loop
+                // turn to avoid recursively laying out the panel.
+                Task { @MainActor [weak self] in
                     self?.positionPanel(
                         animated: true,
                         phase: state.0,

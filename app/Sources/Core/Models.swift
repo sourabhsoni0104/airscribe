@@ -58,11 +58,13 @@ enum DictationPhase: Equatable, Sendable {
     case listening
     case processing
     case done
+    case copied
+    case learned(heard: String, correction: String)
     case error(String)
 
     var isExpanded: Bool {
         switch self {
-        case .peek, .listening, .processing, .done, .error: true
+        case .peek, .listening, .processing, .done, .copied, .learned, .error: true
         case .idle: false
         }
     }
@@ -110,6 +112,7 @@ enum AirScribeError: LocalizedError {
     case unsupportedLocale(String)
     case emptyTranscription
     case audioConfiguration(String)
+    case clipboardCopyFailed
 
     var errorDescription: String? {
         switch self {
@@ -127,6 +130,8 @@ enum AirScribeError: LocalizedError {
             "No speech was detected."
         case let .audioConfiguration(message):
             "The microphone could not be configured: \(message)"
+        case .clipboardCopyFailed:
+            "No text box found, and AirScribe could not copy the text."
         }
     }
 }

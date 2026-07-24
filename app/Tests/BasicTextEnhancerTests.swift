@@ -62,6 +62,49 @@ final class BasicTextEnhancerTests: XCTestCase {
         )
     }
 
+    func testLearnsOneWordToTwoWordCorrection() {
+        let result = correctionLearner.learn(
+            from: "Open the textbook.",
+            to: "Open the text box."
+        )
+
+        XCTAssertEqual(result?.replacements["textbook"], "text box")
+        XCTAssertEqual(
+            enhancer.enhance(
+                "select the textbook",
+                mode: .general,
+                learnedCorrections: result?.replacements ?? [:]
+            ),
+            "Select the text box."
+        )
+    }
+
+    func testLearnedPhraseMatchesFlexibleWhitespace() {
+        XCTAssertEqual(
+            enhancer.enhance(
+                "open the text   book now",
+                mode: .general,
+                learnedCorrections: ["text book": "text box"]
+            ),
+            "Open the text box now."
+        )
+    }
+
+    func testDoesNotLearnContinuedTypingOrPunctuationOnlyEdits() {
+        XCTAssertNil(
+            correctionLearner.learn(
+                from: "Send the report.",
+                to: "Send the report tomorrow."
+            )
+        )
+        XCTAssertNil(
+            correctionLearner.learn(
+                from: "Send the report.",
+                to: "Send the report!"
+            )
+        )
+    }
+
     func testIgnoresCasingOnlyCorrectionsForCommonWords() {
         XCTAssertNil(
             correctionLearner.learn(
@@ -195,5 +238,37 @@ final class PauseAwarePunctuationTests: XCTestCase {
             audioDuration: 0.94
         )
         XCTAssertEqual(result, "Do you see any…")
+    }
+
+    func testPreservesParagraphsQuotesAndParentheses() {
+        let result = PauseAwarePunctuation.apply(
+            to: "he said “hello world”\n\n(then we left)",
+            using: "He said, “hello world.”\n\n(Then we left.)",
+            timings: []
+        )
+        XCTAssertEqual(result, "He said, “hello world.”\n\n(Then we left.)")
+    }
+
+    func testPreservesExistingExpressivePunctuation() {
+        let result = PauseAwarePunctuation.apply(
+            to: "wait—what?! Really?",
+            using: "wait what really",
+            timings: []
+        )
+        XCTAssertEqual(result, "Wait—what?! Really?")
+    }
+
+    func testLongPauseInfersQuestionBoundary() {
+        let words = ["can", "you", "help", "me", "I", "found", "it"]
+        let timings = words.enumerated().map { index, word in
+            let start = index < 4 ? Double(index) * 0.22 : 1.85 + Double(index - 4) * 0.22
+            return TranscribedWordTiming(text: word, startTime: start, endTime: start + 0.16)
+        }
+        let result = PauseAwarePunctuation.apply(
+            to: "can you help me I found it",
+            using: "can you help me I found it",
+            timings: timings
+        )
+        XCTAssertEqual(result, "Can you help me? I found it")
     }
 }

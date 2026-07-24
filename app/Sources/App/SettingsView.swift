@@ -481,13 +481,36 @@ private struct VocabularySettingsView: View {
                     .disabled(newTerm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             List {
+                if !model.learnedCorrections.isEmpty {
+                    Section("Learned corrections") {
+                        ForEach(model.learnedCorrections.keys.sorted(), id: \.self) { heard in
+                            HStack {
+                                Text(heard)
+                                Image(systemName: "arrow.right")
+                                    .foregroundStyle(.secondary)
+                                Text(model.learnedCorrections[heard] ?? "")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                Button {
+                                    model.removeLearnedCorrection(heard)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Forget \(heard)")
+                            }
+                        }
+                    }
+                }
+                Section("Vocabulary") {
                 ForEach(model.customVocabulary, id: \.self) { term in
                     Text(term)
                 }
                 .onDelete(perform: model.removeVocabularyTerms)
+                }
             }
             .overlay {
-                if model.customVocabulary.isEmpty {
+                if model.customVocabulary.isEmpty && model.learnedCorrections.isEmpty {
                     ContentUnavailableView("No custom terms", systemImage: "text.badge.plus", description: Text("Your vocabulary stays on this Mac."))
                 }
             }
