@@ -40,20 +40,28 @@ final class ModelManager: ObservableObject {
 
     let modelDirectory: URL
 
-    private let requiredFiles = [
-        "config.json",
-        "merges.txt",
-        "model.safetensors",
-        "model.safetensors.index.json",
-        "tokenizer_config.json",
-        "vocab.json",
+    nonisolated static let pinnedManifest = [
+        ModelFile(path: "config.json", size: 7_187, sha256: "923618cf5ca452fda0253a6be5c1a17f94a2e4851d3b98beb45848565587bd72"),
+        ModelFile(path: "merges.txt", size: 1_671_853, sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"),
+        ModelFile(path: "model.safetensors", size: 708_236_945, sha256: "70c7e67e588062adce4f10796e47ad42ead51c6671eda61a0987eae38ca95ddf"),
+        ModelFile(path: "model.safetensors.index.json", size: 71_814, sha256: "e3bb80ef0fd42a5be07b04e90c97d60460bbde8af3531e0bfe9100a61404d81a"),
+        ModelFile(path: "tokenizer_config.json", size: 12_487, sha256: "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"),
+        ModelFile(path: "vocab.json", size: 2_776_833, sha256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"),
     ]
+    private let fileManager: FileManager
+    private let manifest: [ModelFile]
     private let markerName = "installation.json"
     private var installTask: Task<Void, Never>?
     private var activeDownload: ResumableFileDownload?
     private var installationID: UUID?
 
-    init(fileManager: FileManager = .default, modelsRoot: URL? = nil) {
+    init(
+        fileManager: FileManager = .default,
+        modelsRoot: URL? = nil,
+        manifest: [ModelFile] = ModelManager.pinnedManifest
+    ) {
+        self.fileManager = fileManager
+        self.manifest = manifest
         let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let root = modelsRoot ?? applicationSupport.appending(path: "AirScribe/models", directoryHint: .isDirectory)
         modelDirectory = root
@@ -62,7 +70,7 @@ final class ModelManager: ObservableObject {
         if Self.hasCompleteInstallation(
             in: modelDirectory,
             markerName: markerName,
-            requiredFiles: requiredFiles,
+            manifest: manifest,
             fileManager: fileManager
         ) {
             state = .installed
@@ -115,7 +123,7 @@ final class ModelManager: ObservableObject {
     }
 
     func revealModelDirectory() {
-        try? FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
         NSWorkspace.shared.activateFileViewerSelecting([modelDirectory])
     }
 
@@ -127,29 +135,43 @@ final class ModelManager: ObservableObject {
         await previousTask?.value
         installTask = nil
         activeDownload = nil
-        try? FileManager.default.removeItem(at: modelDirectory)
-        state = .idle
+        do {
+            if fileManager.fileExists(atPath: modelDirectory.path) {
+                try fileManager.removeItem(at: modelDirectory)
+            }
+            state = .idle
+        } catch {
+            state = .failed("AirScribe Models could not be removed: \(error.localizedDescription)")
+        }
     }
 
     private func install(id: UUID) async throws {
         guard installationID == id else { throw CancellationError() }
         state = .checking
-        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
 
-        let manifest = try await fetchManifest()
         let totalSize = max(manifest.reduce(Int64(0)) { $0 + $1.size }, 1)
-        let missingSize = manifest.reduce(Int64(0)) { partial, file in
+        var validFiles = Set<String>()
+        var missingSize: Int64 = 0
+        for file in manifest {
+            try Task.checkCancellation()
             let destination = modelDirectory.appending(path: file.path)
-            return partial + (fileSize(at: destination) == file.size ? 0 : file.size)
+            if try await fileIsValid(file, at: destination) {
+                validFiles.insert(file.path)
+            } else {
+                missingSize += file.size
+            }
         }
-        try requireFreeSpace(bytes: missingSize + 1_000_000_000)
+        if missingSize > 0 {
+            try requireFreeSpace(bytes: missingSize + 1_000_000_000)
+        }
         var completedSize: Int64 = 0
 
         for file in manifest {
             try Task.checkCancellation()
             let destination = modelDirectory.appending(path: file.path)
 
-            if try await fileIsValid(file, at: destination) {
+            if validFiles.contains(file.path) {
                 completedSize += file.size
                 continue
             }
@@ -183,7 +205,7 @@ final class ModelManager: ObservableObject {
             let verified = try await verify(file, at: destination)
             guard installationID == id else { throw CancellationError() }
             guard verified else {
-                try? FileManager.default.removeItem(at: destination)
+                try? fileManager.removeItem(at: destination)
                 throw ModelManagerError.integrityCheckFailed(file.path)
             }
             completedSize += file.size
@@ -191,11 +213,8 @@ final class ModelManager: ObservableObject {
         }
 
         guard installationID == id else { throw CancellationError() }
-        let installedFiles = try Dictionary(uniqueKeysWithValues: manifest.map { file in
-            let hash = try file.sha256 ?? Self.sha256(
-                of: modelDirectory.appending(path: file.path)
-            )
-            return (file.path, InstalledFile(size: file.size, sha256: hash))
+        let installedFiles = Dictionary(uniqueKeysWithValues: manifest.map { file in
+            (file.path, InstalledFile(size: file.size, sha256: file.sha256))
         })
         let marker = InstallationMarker(
             modelID: Self.modelID,
@@ -213,50 +232,23 @@ final class ModelManager: ObservableObject {
         if installationID == id { state = .installed }
     }
 
-    private func fetchManifest() async throws -> [ModelFile] {
-        let endpoint = URL(string: "https://huggingface.co/api/models/\(Self.modelID)/tree/\(Self.modelRevision)?recursive=true&expand=true")!
-        var request = URLRequest(url: endpoint)
-        request.timeoutInterval = 45
-        request.setValue("AirScribe/0.1", forHTTPHeaderField: "User-Agent")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200 ..< 300).contains(httpResponse.statusCode) else {
-            throw ModelManagerError.manifestUnavailable
-        }
-
-        let entries = try JSONDecoder().decode([HuggingFaceTreeEntry].self, from: data)
-        let entriesByPath = Dictionary(uniqueKeysWithValues: entries.map { ($0.path, $0) })
-        return try requiredFiles.map { path in
-            guard let entry = entriesByPath[path], entry.size > 0 else {
-                throw ModelManagerError.missingRemoteFile(path)
-            }
-            let escapedPath = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
-            let url = URL(string: "https://huggingface.co/\(Self.modelID)/resolve/\(Self.modelRevision)/\(escapedPath)?download=true")!
-            let lfsHash = entry.lfs?.oid.count == 64 ? entry.lfs?.oid.lowercased() : nil
-            return ModelFile(path: path, size: entry.size, sha256: lfsHash, downloadURL: url)
-        }
-    }
-
     private func fileIsValid(_ file: ModelFile, at url: URL) async throws -> Bool {
-        guard FileManager.default.fileExists(atPath: url.path),
+        guard fileManager.fileExists(atPath: url.path),
               fileSize(at: url) == file.size else { return false }
-        guard file.sha256 != nil else { return true }
         return try await verify(file, at: url)
     }
 
     private func verify(_ file: ModelFile, at url: URL) async throws -> Bool {
         guard fileSize(at: url) == file.size else { return false }
-        guard let expectedHash = file.sha256 else { return true }
         state = .verifying(progress: 0)
         let actualHash = try await Task.detached(priority: .utility) {
             try Self.sha256(of: url)
         }.value
-        return actualHash == expectedHash
+        return actualHash == file.sha256
     }
 
     private func fileSize(at url: URL) -> Int64? {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
         return (attributes?[.size] as? NSNumber)?.int64Value
     }
 
@@ -281,10 +273,31 @@ final class ModelManager: ObservableObject {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    nonisolated static func validateInstallation(
+        in directory: URL,
+        manifest: [ModelFile] = pinnedManifest,
+        fileManager: FileManager = .default
+    ) throws {
+        guard hasCompleteInstallation(
+            in: directory,
+            markerName: "installation.json",
+            manifest: manifest,
+            fileManager: fileManager
+        ) else {
+            throw ModelManagerError.incompleteInstallation
+        }
+        for file in manifest {
+            let url = directory.appending(path: file.path)
+            guard try sha256(of: url) == file.sha256 else {
+                throw ModelManagerError.integrityCheckFailed(file.path)
+            }
+        }
+    }
+
     nonisolated private static func hasCompleteInstallation(
         in directory: URL,
         markerName: String,
-        requiredFiles: [String],
+        manifest: [ModelFile],
         fileManager: FileManager
     ) -> Bool {
         let markerURL = directory.appending(path: markerName)
@@ -293,38 +306,32 @@ final class ModelManager: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
         guard let marker = try? decoder.decode(InstallationMarker.self, from: markerData),
               marker.modelID == modelID,
-              marker.revision == modelRevision else { return false }
+              marker.revision == modelRevision,
+              marker.files.count == manifest.count else { return false }
 
-        return requiredFiles.allSatisfy { path in
-            guard let expected = marker.files[path],
-                  expected.size > 0,
-                  let expectedHash = expected.sha256,
-                  expectedHash.count == 64 else { return false }
-            let fileURL = directory.appending(path: path)
+        return manifest.allSatisfy { file in
+            guard let expected = marker.files[file.path],
+                  expected.size == file.size,
+                  expected.sha256 == file.sha256 else { return false }
+            let fileURL = directory.appending(path: file.path)
             guard let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
                   let actualSize = (attributes[.size] as? NSNumber)?.int64Value else { return false }
-            guard actualSize == expected.size,
-                  let actualHash = try? sha256(of: fileURL) else { return false }
-            return actualHash == expectedHash
+            return actualSize == file.size
         }
     }
 }
 
-private struct ModelFile: Sendable {
+struct ModelFile: Sendable, Equatable {
     let path: String
     let size: Int64
-    let sha256: String?
-    let downloadURL: URL
-}
+    let sha256: String
 
-private struct HuggingFaceTreeEntry: Decodable {
-    struct LFS: Decodable {
-        let oid: String
+    var downloadURL: URL {
+        let escapedPath = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+        return URL(
+            string: "https://huggingface.co/\(ModelManager.modelID)/resolve/\(ModelManager.modelRevision)/\(escapedPath)?download=true"
+        )!
     }
-
-    let path: String
-    let size: Int64
-    let lfs: LFS?
 }
 
 private struct InstallationMarker: Codable {
@@ -340,17 +347,14 @@ private struct InstalledFile: Codable {
 }
 
 private enum ModelManagerError: LocalizedError {
-    case manifestUnavailable
-    case missingRemoteFile(String)
+    case incompleteInstallation
     case integrityCheckFailed(String)
     case insufficientStorage(required: Int64, available: Int64)
 
     var errorDescription: String? {
         switch self {
-        case .manifestUnavailable:
-            return "The AirScribe Models manifest could not be loaded. System transcription remains available."
-        case let .missingRemoteFile(path):
-            return "AirScribe Models is missing a required file: \(path)."
+        case .incompleteInstallation:
+            return "AirScribe Models is incomplete or its installation record is invalid."
         case let .integrityCheckFailed(path):
             return "An AirScribe Models file failed its integrity check: \(path)."
         case let .insufficientStorage(required, available):
@@ -361,7 +365,7 @@ private enum ModelManagerError: LocalizedError {
     }
 }
 
-private final class ResumableFileDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+final class ResumableFileDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let request: URLRequest
     private let destination: URL
     private let resumeDataURL: URL
@@ -372,6 +376,7 @@ private final class ResumableFileDownload: NSObject, URLSessionDownloadDelegate,
     private var session: URLSession?
     private var task: URLSessionDownloadTask?
     private var moveError: Error?
+    private var cancelled = false
 
     init(
         request: URLRequest,
@@ -386,8 +391,13 @@ private final class ResumableFileDownload: NSObject, URLSessionDownloadDelegate,
     }
 
     func start() async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             lock.lock()
+            guard !cancelled else {
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+                return
+            }
             self.continuation = continuation
             let configuration = URLSessionConfiguration.default
             configuration.waitsForConnectivity = true
@@ -410,6 +420,7 @@ private final class ResumableFileDownload: NSObject, URLSessionDownloadDelegate,
 
     func cancel() {
         lock.lock()
+        cancelled = true
         let task = task
         lock.unlock()
         task?.cancel { [resumeDataURL] resumeData in

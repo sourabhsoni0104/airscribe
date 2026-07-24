@@ -58,17 +58,20 @@ final class ContextManager {
 
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         let focusedElement = copiedElement(appElement, attribute: kAXFocusedUIElementAttribute)
-        let secureField = SecureInputGuard.isSecure(focusedElement)
+        // If Accessibility cannot identify the focused control, its security
+        // status is unknown. In that case, do not capture content that could
+        // include a password or another protected field.
+        let focusIsSafe = focusedElement.map { !SecureInputGuard.isSecure($0) } == true
         let window = copiedElement(appElement, attribute: kAXFocusedWindowAttribute)
         let windowTitle = copiedString(window, attribute: kAXTitleAttribute)
-        let focusedText = secureField ? nil : capturedFocusedText(focusedElement)
-        let clipboardText = options.includeClipboard && !secureField
+        let focusedText = focusIsSafe ? capturedFocusedText(focusedElement) : nil
+        let clipboardText = options.includeClipboard && focusIsSafe
             ? limited(NSPasteboard.general.string(forType: .string), to: 2_000)
             : nil
 
         var screenText: String?
         if options.includeScreenText,
-           !secureField,
+           focusIsSafe,
            let frame = copiedFrame(window),
            frame.width > 10,
            frame.height > 10,

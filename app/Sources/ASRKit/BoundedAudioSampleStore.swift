@@ -102,9 +102,18 @@ final class BoundedAudioSampleStore {
         let directory = fileManager.temporaryDirectory
             .appending(path: "AirScribe", directoryHint: .isDirectory)
             .appending(path: "TranscriptionBuffers", directoryHint: .isDirectory)
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         let url = directory.appending(path: "\(UUID().uuidString).pcm")
-        guard fileManager.createFile(atPath: url.path, contents: nil) else {
+        guard fileManager.createFile(
+            atPath: url.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
             throw CocoaError(.fileWriteUnknown)
         }
         let handle = try FileHandle(forWritingTo: url)

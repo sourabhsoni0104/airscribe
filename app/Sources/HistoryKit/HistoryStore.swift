@@ -11,6 +11,7 @@ final class HistoryStore: ObservableObject {
     private let maximumRecordCount: Int
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private var loadFailure: Error?
 
     init(
         fileManager: FileManager = .default,
@@ -32,14 +33,22 @@ final class HistoryStore: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
 
         do {
-            try fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+            try secureDirectory(fileURL.deletingLastPathComponent())
+            try secureDirectory(audioDirectory)
+            secureExistingFiles()
             try load()
         } catch {
+            loadFailure = error
             lastError = "Dictation history could not be loaded: \(error.localizedDescription)"
         }
     }
 
     func add(_ record: DictationRecord) throws {
+        guard loadFailure == nil else {
+            let error = HistoryStoreError.unavailableUntilRecovery
+            lastError = error.localizedDescription
+            throw error
+        }
         let previousRecords = records
         records.insert(record, at: 0)
         let evictedRecords: ArraySlice<DictationRecord>
@@ -69,50 +78,60 @@ final class HistoryStore: ObservableObject {
     }
 
     func delete(_ record: DictationRecord) {
+        do {
+            try deleteAudio(for: record)
+        } catch {
+            lastError = "The dictation and its recording could not be deleted: \(error.localizedDescription)"
+            return
+        }
+
         let previousRecords = records
         records.removeAll { $0.id == record.id }
         do {
             try save()
+            lastError = nil
         } catch {
             records = previousRecords
             lastError = "The dictation could not be deleted: \(error.localizedDescription)"
-            return
-        }
-
-        do {
-            try deleteAudio(for: record)
-            lastError = nil
-        } catch {
-            lastError = "The dictation was deleted, but its recording could not be removed: \(error.localizedDescription)"
         }
     }
 
-    func deleteAll() {
+    func deleteAll() throws {
         let previousRecords = records
+        do {
+            if fileManager.fileExists(atPath: audioDirectory.path) {
+                try fileManager.removeItem(at: audioDirectory)
+            }
+        } catch {
+            lastError = "Dictation recordings could not be deleted: \(error.localizedDescription)"
+            throw error
+        }
+
         records.removeAll()
         do {
             if fileManager.fileExists(atPath: fileURL.path) {
                 try fileManager.removeItem(at: fileURL)
             }
+            loadFailure = nil
+            lastError = nil
         } catch {
             records = previousRecords
             lastError = "Dictation history could not be deleted: \(error.localizedDescription)"
-            return
-        }
-
-        do {
-            if fileManager.fileExists(atPath: audioDirectory.path) {
-                try fileManager.removeItem(at: audioDirectory)
-            }
-            lastError = nil
-        } catch {
-            lastError = "Dictation history was deleted, but some recordings could not be removed: \(error.localizedDescription)"
+            throw error
         }
     }
 
     func newAudioURL() throws -> URL {
-        try fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
-        return audioDirectory.appending(path: "\(UUID().uuidString).caf")
+        try secureDirectory(audioDirectory)
+        let url = audioDirectory.appending(path: "\(UUID().uuidString).caf")
+        guard fileManager.createFile(
+            atPath: url.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return url
     }
 
     func search(_ query: String) -> [DictationRecord] {
@@ -133,6 +152,7 @@ final class HistoryStore: ObservableObject {
     private func save() throws {
         let data = try encoder.encode(records)
         try data.write(to: fileURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
 
     private func deleteAudio(for record: DictationRecord) throws {
@@ -142,5 +162,37 @@ final class HistoryStore: ObservableObject {
         if fileManager.fileExists(atPath: url.path) {
             try fileManager.removeItem(at: url)
         }
+    }
+
+    private func secureDirectory(_ url: URL) throws {
+        try fileManager.createDirectory(
+            at: url,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+    }
+
+    private func secureExistingFiles() {
+        if fileManager.fileExists(atPath: fileURL.path) {
+            try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        }
+        guard let enumerator = fileManager.enumerator(
+            at: audioDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return }
+        for case let url as URL in enumerator {
+            if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
+        }
+    }
+}
+
+private enum HistoryStoreError: LocalizedError {
+    case unavailableUntilRecovery
+
+    var errorDescription: String? {
+        "Dictation history is damaged and was not overwritten. Delete all local data or restore the history file before saving another dictation."
     }
 }

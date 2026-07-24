@@ -2,17 +2,19 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import CoreGraphics
+import UniformTypeIdentifiers
 
 struct TextInserter: Sendable {
     enum InsertionResult: Sendable {
         case inserted(InsertionHandle)
+        case typed
         case copiedToClipboard
 
         var handle: InsertionHandle? {
             switch self {
             case let .inserted(handle):
                 return handle
-            case .copiedToClipboard:
+            case .typed, .copiedToClipboard:
                 return nil
             }
         }
@@ -45,16 +47,35 @@ struct TextInserter: Sendable {
     @MainActor
     @discardableResult
     func insert(_ text: String) async throws -> InsertionResult {
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        let targetsTerminal = Self.isTerminalApplication(
+            bundleIdentifier: frontmostApplication?.bundleIdentifier
+        )
+
         // Clipboard fallback must remain available even when macOS has stale or
-        // missing Accessibility authorization. Direct insertion still requires it.
+        // missing Accessibility authorization. A terminal is different: silently
+        // copying there looks like a failed insertion, so report the permission
+        // problem without changing the clipboard.
         guard !SecureInputGuard.isSecure(nil) else { throw AirScribeError.secureInputActive }
         guard AXIsProcessTrusted() else {
+            if targetsTerminal {
+                throw AirScribeError.accessibilityPermissionDenied
+            }
             try copyToClipboard(text)
             return .copiedToClipboard
         }
 
         let element = focusedElement()
         guard !SecureInputGuard.isSecure(element) else { throw AirScribeError.secureInputActive }
+        if targetsTerminal, let frontmostApplication {
+            let safeText = Self.terminalSafeText(text)
+            guard !safeText.isEmpty else { throw AirScribeError.emptyTranscription }
+            try await typeIntoTerminal(
+                safeText,
+                processIdentifier: frontmostApplication.processIdentifier
+            )
+            return .typed
+        }
         guard let element, isEditableTextElement(element) else {
             try copyToClipboard(text)
             return .copiedToClipboard
@@ -100,8 +121,34 @@ struct TextInserter: Sendable {
             }
         )
 
+        // Prefer Accessibility insertion so the user's clipboard is untouched.
+        // If an editor accepts the write but does not expose enough state to
+        // verify it, avoid a second paste that could duplicate the text.
+        if Self.isTextInputRole(
+            role: stringAttribute(kAXRoleAttribute, of: element),
+            subrole: stringAttribute(kAXSubroleAttribute, of: element)
+        ), AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFString
+        ) == .success {
+            for delay in [35, 70, 120] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                if insertionWasObserved(handle) {
+                    return .inserted(handle)
+                }
+            }
+            try copyToClipboard(text)
+            return .copiedToClipboard
+        }
+
         let pasteboard = NSPasteboard.general
-        let snapshot = snapshotPasteboard(pasteboard)
+        guard let snapshot = snapshotPasteboard(pasteboard) else {
+            // Do not materialize or destroy large images, files, and custom
+            // application clipboard payloads merely to perform a paste.
+            try copyToClipboard(text)
+            return .copiedToClipboard
+        }
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string),
               pasteboard.string(forType: .string) == text else {
@@ -145,6 +192,73 @@ struct TextInserter: Sendable {
         guard Self.write(text, to: .general) else {
             throw AirScribeError.clipboardCopyFailed
         }
+    }
+
+    @MainActor
+    func insertionHandleForRecentlyPastedText(_ text: String) -> InsertionHandle? {
+        guard !text.isEmpty,
+              AXIsProcessTrusted(),
+              let element = focusedElement(),
+              !SecureInputGuard.isSecure(element),
+              isEditableTextElement(element),
+              let value = stringValue(of: element),
+              let selection = selectedRange(of: element),
+              let range = Self.pastedTextRange(
+                  in: value,
+                  selection: NSRange(location: selection.location, length: selection.length),
+                  pastedText: text
+              ) else {
+            return nil
+        }
+
+        let source = value as NSString
+        let prefix = source.substring(to: range.location)
+        let suffix = source.substring(from: NSMaxRange(range))
+        let anchors = contextAnchors(
+            for: element,
+            selection: CFRange(location: range.location, length: range.length),
+            boundaries: (prefix, suffix)
+        )
+        var processIdentifier: pid_t = 0
+        AXUIElementGetPid(element, &processIdentifier)
+        return InsertionHandle(
+            id: UUID(),
+            element: element,
+            processIdentifier: processIdentifier,
+            insertionLocation: range.location,
+            insertedText: text,
+            prefix: prefix,
+            suffix: suffix,
+            beforeAnchor: anchors.before,
+            afterAnchor: anchors.after,
+            unaffectedCharacterCount: max(0, source.length - range.length)
+        )
+    }
+
+    static func pastedTextRange(
+        in value: String,
+        selection: NSRange,
+        pastedText: String
+    ) -> NSRange? {
+        let source = value as NSString
+        let pastedLength = (pastedText as NSString).length
+        guard pastedLength > 0,
+              selection.location >= 0,
+              selection.length >= 0,
+              NSMaxRange(selection) <= source.length else {
+            return nil
+        }
+
+        let candidate: NSRange
+        if selection.length == pastedLength {
+            candidate = selection
+        } else if selection.length == 0, selection.location >= pastedLength {
+            candidate = NSRange(location: selection.location - pastedLength, length: pastedLength)
+        } else {
+            return nil
+        }
+        guard source.substring(with: candidate) == pastedText else { return nil }
+        return candidate
     }
 
     @MainActor
@@ -199,10 +313,10 @@ struct TextInserter: Sendable {
     func correctedText(for handle: InsertionHandle) -> String? {
         guard AXIsProcessTrusted(),
               let element = handle.element,
-              !SecureInputGuard.isSecure(element) else { return nil }
-        if let current = focusedElement(), SecureInputGuard.isSecure(current) {
-            return nil
-        }
+              let current = focusedElement(),
+              CFEqual(element, current),
+              !SecureInputGuard.isSecure(element),
+              !SecureInputGuard.isSecure(current) else { return nil }
 
         var currentProcessIdentifier: pid_t = 0
         AXUIElementGetPid(element, &currentProcessIdentifier)
@@ -249,6 +363,20 @@ struct TextInserter: Sendable {
             return nil
         }
         return observed == handle.insertedText ? nil : observed
+    }
+
+    @MainActor
+    func canObserveCorrection(_ handle: InsertionHandle) -> Bool {
+        guard AXIsProcessTrusted(),
+              let element = handle.element,
+              let current = focusedElement(),
+              CFEqual(element, current),
+              !SecureInputGuard.isSecure(current) else {
+            return false
+        }
+        var processIdentifier: pid_t = 0
+        AXUIElementGetPid(current, &processIdentifier)
+        return processIdentifier == handle.processIdentifier
     }
 
     @MainActor
@@ -318,13 +446,113 @@ struct TextInserter: Sendable {
     }
 
     @MainActor
-    private func snapshotPasteboard(_ pasteboard: NSPasteboard) -> PasteboardSnapshot {
-        let items = (pasteboard.pasteboardItems ?? []).map { item in
-            Dictionary(uniqueKeysWithValues: item.types.compactMap { type in
-                item.data(forType: type).map { (type, $0) }
-            })
+    private func snapshotPasteboard(_ pasteboard: NSPasteboard) -> PasteboardSnapshot? {
+        let sourceItems = pasteboard.pasteboardItems ?? []
+        guard sourceItems.count <= 16 else { return nil }
+        var totalBytes = 0
+        var items: [[NSPasteboard.PasteboardType: Data]] = []
+        for item in sourceItems {
+            guard item.types.count <= 32,
+                  item.types.allSatisfy(Self.isSafeTextPasteboardType) else { return nil }
+            var stored: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types {
+                guard let data = item.data(forType: type) else { continue }
+                totalBytes += data.count
+                guard totalBytes <= 4 * 1_024 * 1_024 else { return nil }
+                stored[type] = data
+            }
+            items.append(stored)
         }
         return PasteboardSnapshot(items: items)
+    }
+
+    static func isSafeTextPasteboardType(_ type: NSPasteboard.PasteboardType) -> Bool {
+        if type == .string || type == .rtf || type == .html || type == .tabularText {
+            return true
+        }
+        return UTType(type.rawValue)?.conforms(to: .text) == true
+    }
+
+    static func isTerminalApplication(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier = bundleIdentifier?.lowercased() else { return false }
+        return [
+            "com.apple.terminal",
+            "com.googlecode.iterm2",
+            "dev.warp.warp",
+            "dev.warp.warp-stable",
+            "net.kovidgoyal.kitty",
+            "org.alacritty",
+            "io.alacritty",
+            "com.github.wez.wezterm",
+            "com.mitchellh.ghostty",
+            "com.raphaelamorim.rio",
+        ].contains(bundleIdentifier)
+    }
+
+    static func terminalSafeText(_ text: String) -> String {
+        let withoutControls = text.unicodeScalars.map { scalar in
+            CharacterSet.controlCharacters.contains(scalar) ? " " : String(scalar)
+        }.joined()
+        return withoutControls
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func terminalTypingChunks(_ text: String, maximumUTF16Count: Int = 16) -> [String] {
+        guard maximumUTF16Count > 0 else { return [] }
+        var chunks: [String] = []
+        var current = ""
+        var currentCount = 0
+        for character in text {
+            let value = String(character)
+            let count = value.utf16.count
+            if !current.isEmpty, currentCount + count > maximumUTF16Count {
+                chunks.append(current)
+                current = ""
+                currentCount = 0
+            }
+            current.append(character)
+            currentCount += count
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
+    @MainActor
+    private func typeIntoTerminal(_ text: String, processIdentifier: pid_t) async throws {
+        guard NSRunningApplication(processIdentifier: processIdentifier) != nil,
+              let source = CGEventSource(stateID: .hidSystemState) else {
+            throw AirScribeError.accessibilityPermissionDenied
+        }
+
+        for chunk in Self.terminalTypingChunks(text) {
+            guard let keyDown = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: CGKeyCode(kVK_ANSI_A),
+                keyDown: true
+            ),
+            let keyUp = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: CGKeyCode(kVK_ANSI_A),
+                keyDown: false
+            ) else {
+                throw AirScribeError.accessibilityPermissionDenied
+            }
+            let characters = Array(chunk.utf16)
+            characters.withUnsafeBufferPointer { buffer in
+                keyDown.keyboardSetUnicodeString(
+                    stringLength: buffer.count,
+                    unicodeString: buffer.baseAddress
+                )
+                keyUp.keyboardSetUnicodeString(
+                    stringLength: buffer.count,
+                    unicodeString: buffer.baseAddress
+                )
+            }
+            keyDown.postToPid(processIdentifier)
+            keyUp.postToPid(processIdentifier)
+            try? await Task.sleep(for: .milliseconds(3))
+        }
     }
 
     @MainActor
@@ -349,7 +577,8 @@ struct TextInserter: Sendable {
             kAXFocusedUIElementAttribute as CFString,
             &value
         ) == .success,
-        let value else { return nil }
+        let value,
+        CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
     }
 

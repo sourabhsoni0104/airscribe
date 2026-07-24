@@ -35,6 +35,43 @@ final class MeetingStoreTests: XCTestCase {
         try? FileManager.default.removeItem(at: outside)
     }
 
+    func testCorruptMeetingHistoryIsNotOverwrittenByAddingARecord() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let meetingsURL = root.appending(path: "meetings.json")
+        let damagedData = Data("{not-json".utf8)
+        try damagedData.write(to: meetingsURL)
+
+        let store = MeetingStore(applicationSupportRoot: root)
+
+        XCTAssertThrowsError(try store.add(sampleRecord()))
+        XCTAssertEqual(try Data(contentsOf: meetingsURL), damagedData)
+        XCTAssertNotNil(store.lastError)
+    }
+
+    func testSensitiveMeetingFilesUseOwnerOnlyPermissions() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MeetingStore(applicationSupportRoot: root)
+        let audioURL = try store.newAudioURL(source: .you)
+        try store.add(sampleRecord(microphonePath: audioURL.path))
+
+        XCTAssertEqual(posixPermissions(at: audioURL), 0o600)
+        XCTAssertEqual(posixPermissions(at: root.appending(path: "meetings.json")), 0o600)
+        XCTAssertEqual(posixPermissions(at: root), 0o700)
+    }
+
+    private func temporaryRoot() -> URL {
+        FileManager.default.temporaryDirectory
+            .appending(path: "AirScribeMeetingTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+    }
+
+    private func posixPermissions(at url: URL) -> Int {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.posixPermissions] as? NSNumber)?.intValue ?? -1
+    }
+
     private func sampleRecord(
         microphonePath: String? = nil,
         systemPath: String? = nil

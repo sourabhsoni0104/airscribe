@@ -16,9 +16,76 @@ final class BasicTextEnhancerTests: XCTestCase {
         XCTAssertEqual(output, "I like local software.")
     }
 
+    func testRemovesFumblesAndKeepsTheExplicitCorrection() {
+        XCTAssertEqual(
+            enhancer.enhance("the command is port, I mean put", mode: .general),
+            "The command is put."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("I I need the final version", mode: .general),
+            "I need the final version."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("use port but I meant put for the command", mode: .general),
+            "Use put for the command."
+        )
+    }
+
+    func testSpokenFullStopUsesGrammaticalContext() {
+        XCTAssertEqual(
+            enhancer.enhance("send it now full stop start the next item", mode: .general),
+            "Send it now. Start the next item."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("send it now full stop then we can leave", mode: .general),
+            "Send it now. Then we can leave."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("print the words full stop", mode: .general),
+            "Print the words full stop."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("a full stop is different from a comma", mode: .general),
+            "A full stop is different from a comma."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("I said full stop but it inserted a symbol", mode: .general),
+            "I said full stop but it inserted a symbol."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("I want the word full stop to be printed", mode: .general),
+            "I want the word full stop to be printed."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("full stop can also be written as a period", mode: .general),
+            "Full stop can also be written as a period."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("what is full stop", mode: .general),
+            "What is full stop?"
+        )
+        XCTAssertEqual(
+            enhancer.enhance("full stop", mode: .general),
+            "Full stop."
+        )
+        XCTAssertEqual(
+            enhancer.enhance("send it now full stop", mode: .general),
+            "Send it now."
+        )
+    }
+
     func testPreservesVocabularyCapitalization() {
         let output = enhancer.enhance("airscribe works offline", mode: .general, vocabulary: ["AirScribe"])
         XCTAssertEqual(output, "AirScribe works offline.")
+    }
+
+    func testNearbyContextRepairsSplitCompoundTerms() {
+        let output = enhancer.enhance(
+            "use the coral lip stick shade",
+            mode: .general,
+            vocabulary: ["lipstick"]
+        )
+        XCTAssertEqual(output, "Use the coral lipstick shade.")
     }
 
     func testResolvesOnesAndOnceFromContext() {
@@ -77,6 +144,23 @@ final class BasicTextEnhancerTests: XCTestCase {
                 learnedCorrections: result?.replacements ?? [:]
             ),
             "Select the text box."
+        )
+    }
+
+    func testLearnsTwoWordsAsOneWord() {
+        let result = correctionLearner.learn(
+            from: "Choose the coral lip stick shade.",
+            to: "Choose the coral lipstick shade."
+        )
+
+        XCTAssertEqual(result?.replacements["lip stick"], "lipstick")
+        XCTAssertEqual(
+            enhancer.enhance(
+                "use the lip stick color",
+                mode: .general,
+                learnedCorrections: result?.replacements ?? [:]
+            ),
+            "Use the lipstick color."
         )
     }
 
@@ -287,5 +371,55 @@ final class PauseAwarePunctuationTests: XCTestCase {
             timings: timings
         )
         XCTAssertEqual(result, "Can you help me? I found it")
+    }
+
+    func testPauseInsideSubordinateClauseUsesCommaInsteadOfPeriod() {
+        let words = ["whenever", "I", "stop", "it", "adds", "punctuation"]
+        let timings = words.enumerated().map { index, word in
+            let start = index < 3 ? Double(index) * 0.22 : 1.75 + Double(index - 3) * 0.22
+            return TranscribedWordTiming(text: word, startTime: start, endTime: start + 0.16)
+        }
+        let result = PauseAwarePunctuation.apply(
+            to: "whenever I stop. it adds punctuation",
+            using: "Whenever I stop. It adds punctuation.",
+            timings: timings
+        )
+        XCTAssertEqual(result, "Whenever I stop, it adds punctuation.")
+    }
+
+    func testModeratePauseDoesNotBlindlyCopySystemPeriod() {
+        let timings = [
+            TranscribedWordTiming(text: "we", startTime: 0, endTime: 0.15),
+            TranscribedWordTiming(text: "reviewed", startTime: 0.2, endTime: 0.4),
+            TranscribedWordTiming(text: "the", startTime: 0.45, endTime: 0.58),
+            TranscribedWordTiming(text: "proposal", startTime: 0.63, endTime: 0.84),
+            TranscribedWordTiming(text: "especially", startTime: 1.44, endTime: 1.7),
+            TranscribedWordTiming(text: "pricing", startTime: 1.75, endTime: 1.96),
+        ]
+        let result = PauseAwarePunctuation.apply(
+            to: "we reviewed the proposal. especially pricing",
+            using: "We reviewed the proposal. Especially pricing.",
+            timings: timings
+        )
+        XCTAssertEqual(result, "We reviewed the proposal, especially pricing.")
+    }
+}
+
+final class SpeechContextPhrasesTests: XCTestCase {
+    func testContextIsSplitIntoUsableVocabularyPhrases() {
+        let phrases = SpeechContextPhrases.extract(
+            from: """
+            Active app: Notes
+            Window: Product launch
+            Preferred vocabulary: AirScribe, Kubernetes
+            Focused text: Pick the coral lipstick shade for Priyanka.
+            """
+        )
+
+        XCTAssertTrue(phrases.contains("AirScribe"))
+        XCTAssertTrue(phrases.contains("Kubernetes"))
+        XCTAssertTrue(phrases.contains("lipstick"))
+        XCTAssertTrue(phrases.contains("Priyanka"))
+        XCTAssertFalse(phrases.contains { $0.contains("\n") })
     }
 }

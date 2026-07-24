@@ -44,6 +44,8 @@ final class AppModel: ObservableObject {
                 correctionLearningTasks.values.forEach { $0.cancel() }
                 correctionLearningTasks = [:]
                 correctionLearningTaskOrder = []
+                clipboardCorrectionLearningTask?.cancel()
+                clipboardCorrectionLearningTask = nil
             }
         }
     }
@@ -95,6 +97,7 @@ final class AppModel: ObservableObject {
         didSet { defaults.set(excludedContextApps, forKey: Keys.excludedContextApps) }
     }
     @Published private(set) var lastContextSummary = "No context captured"
+    @Published private(set) var dataDeletionError: String?
 
     let history = HistoryStore()
     let permissions = PermissionManager()
@@ -135,6 +138,7 @@ final class AppModel: ObservableObject {
     private var permissionObservation: AnyCancellable?
     private var correctionLearningTasks: [UUID: Task<Void, Never>] = [:]
     private var correctionLearningTaskOrder: [UUID] = []
+    private var clipboardCorrectionLearningTask: Task<Void, Never>?
     private var learningFeedbackTask: Task<Void, Never>?
     private var activeContext: ContextSnapshot = .empty
 
@@ -329,6 +333,7 @@ final class AppModel: ObservableObject {
 
     func beginDictation() async {
         guard activeSession == nil else { return }
+        cancelPendingCorrectionLearning()
         phase = .listening
         partialTranscript = ""
         audioLevel = 0
@@ -418,10 +423,17 @@ final class AppModel: ObservableObject {
                 : nil
             let isPlainQuestion = invocation == nil && assistantEngine.isLikelyQuestion(raw)
             let outputBase: String
-            if invocation == nil, outputLanguageMode == .english {
-                outputBase = (try? await translator.translateToEnglish(raw)) ?? raw
-            } else {
+            if invocation != nil {
                 outputBase = raw
+            } else {
+                switch outputLanguageMode {
+                case .original:
+                    outputBase = raw
+                case .romanizedHindi:
+                    outputBase = await translator.romanizeHindi(raw)
+                case .english:
+                    outputBase = (try? await translator.translateToEnglish(raw)) ?? raw
+                }
             }
             let immediateText: String
             if let invocation {
@@ -434,7 +446,7 @@ final class AppModel: ObservableObject {
                 immediateText = basicEnhancer.enhance(
                     outputBase,
                     mode: selectedMode,
-                    vocabulary: customVocabulary,
+                    vocabulary: customVocabulary + contextualVocabularyTerms(),
                     learnedCorrections: learnedCorrections
                 )
             }
@@ -530,8 +542,12 @@ final class AppModel: ObservableObject {
                     audioPath: activeAudioURL?.path
                 )
             )
-            if invocation == nil, learnFromCorrections, let finalInsertionHandle {
-                observeCorrection(to: finalInsertionHandle)
+            if invocation == nil, learnFromCorrections {
+                if let finalInsertionHandle {
+                    observeCorrection(to: finalInsertionHandle)
+                } else if copiedToClipboard {
+                    observeClipboardCorrection(to: insertedText)
+                }
             }
             activeAudioURL = nil
             recovery.complete()
@@ -603,6 +619,25 @@ final class AppModel: ObservableObject {
         learnedCorrections.removeValue(forKey: heard)
     }
 
+    private func observeClipboardCorrection(to copiedText: String) {
+        clipboardCorrectionLearningTask?.cancel()
+        clipboardCorrectionLearningTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.clipboardCorrectionLearningTask = nil }
+            // The fallback may be pasted into a field after dictation completes.
+            // Detect it immediately before the caret, then reuse the same bounded
+            // correction observer as automatic insertion.
+            for _ in 0 ..< 32 {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled, self.learnFromCorrections else { return }
+                if let handle = self.textInserter.insertionHandleForRecentlyPastedText(copiedText) {
+                    self.observeCorrection(to: handle)
+                    return
+                }
+            }
+        }
+    }
+
     private func observeCorrection(to handle: TextInserter.InsertionHandle) {
         if correctionLearningTasks.count >= 4,
            let oldestID = correctionLearningTaskOrder.first {
@@ -620,11 +655,19 @@ final class AppModel: ObservableObject {
             }
             var lastObserved: String?
             var stableObservations = 0
-            // Keep a small number of independent observations alive so starting a
-            // later dictation does not discard a correction still being edited.
-            for _ in 0 ..< 400 {
-                try? await Task.sleep(for: .milliseconds(300))
+            var unavailableObservations = 0
+            // Learn only from an immediate edit in the same focused field.
+            // A short grace period tolerates transient Accessibility reads, while
+            // leaving the field or starting another dictation ends observation.
+            for _ in 0 ..< 48 {
+                try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled, self.learnFromCorrections else { return }
+                guard self.textInserter.canObserveCorrection(handle) else {
+                    unavailableObservations += 1
+                    if unavailableObservations >= 2 { return }
+                    continue
+                }
+                unavailableObservations = 0
                 guard let observed = self.textInserter.correctedText(for: handle),
                       let learning = self.correctionLearner.learn(
                           from: handle.insertedText,
@@ -638,7 +681,7 @@ final class AppModel: ObservableObject {
                     lastObserved = observed
                     stableObservations = 1
                 }
-                guard stableObservations >= 5 else { continue }
+                guard stableObservations >= 4 else { continue }
                 for (heard, correction) in learning.replacements {
                     self.learnedCorrections[heard] = correction
                 }
@@ -649,6 +692,14 @@ final class AppModel: ObservableObject {
                 return
             }
         }
+    }
+
+    private func cancelPendingCorrectionLearning() {
+        correctionLearningTasks.values.forEach { $0.cancel() }
+        correctionLearningTasks = [:]
+        correctionLearningTaskOrder = []
+        clipboardCorrectionLearningTask?.cancel()
+        clipboardCorrectionLearningTask = nil
     }
 
     private func showLearnedFeedback(heard: String, correction: String) {
@@ -732,30 +783,87 @@ final class AppModel: ObservableObject {
     }
 
     func deleteAllLocalData() async {
+        dataDeletionError = nil
         await cancelDictation()
         await meetings.cancel()
-        history.deleteAll()
-        meetings.store.deleteAll()
-        recovery.discardRecoveredFiles()
+        var supportDeletionFailures: [String] = []
+        do {
+            try history.deleteAll()
+        } catch {
+            supportDeletionFailures.append("dictation history: \(error.localizedDescription)")
+        }
+        do {
+            try meetings.store.deleteAll()
+        } catch {
+            supportDeletionFailures.append("meeting history: \(error.localizedDescription)")
+        }
+        if !recovery.discardRecoveredFiles() {
+            supportDeletionFailures.append(
+                "recovered audio: \(recovery.lastError ?? "some files could not be removed")"
+            )
+        }
         await modelManager.removeInstallation()
         await languagePackManager.removeAndWait()
         launchAtLogin.disableForDataReset()
-        try? cloudAPIKeyStore.delete()
+
+        var failures: [String] = []
+        var keyRemains = false
+        do {
+            try cloudAPIKeyStore.delete()
+            if try cloudAPIKeyStore.read() != nil {
+                keyRemains = true
+                failures.append("the cloud API key is still present in Keychain")
+            }
+        } catch {
+            keyRemains = true
+            failures.append("cloud API key: \(error.localizedDescription)")
+        }
 
         let fileManager = FileManager.default
+        var applicationSupportURL: URL?
         if let applicationSupport = fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first {
-            try? fileManager.removeItem(
-                at: applicationSupport.appending(path: "AirScribe", directoryHint: .isDirectory)
-            )
+            let url = applicationSupport.appending(path: "AirScribe", directoryHint: .isDirectory)
+            applicationSupportURL = url
+            do {
+                if fileManager.fileExists(atPath: url.path) {
+                    try fileManager.removeItem(at: url)
+                }
+            } catch {
+                failures.append("application data: \(error.localizedDescription)")
+            }
+        } else {
+            failures.append("the Application Support folder could not be located")
         }
-        try? fileManager.removeItem(
-            at: fileManager.temporaryDirectory
-                .appending(path: "AirScribe", directoryHint: .isDirectory)
-                .appending(path: "TranscriptionBuffers", directoryHint: .isDirectory)
-        )
+        let temporaryBuffers = fileManager.temporaryDirectory
+            .appending(path: "AirScribe", directoryHint: .isDirectory)
+            .appending(path: "TranscriptionBuffers", directoryHint: .isDirectory)
+        do {
+            if fileManager.fileExists(atPath: temporaryBuffers.path) {
+                try fileManager.removeItem(at: temporaryBuffers)
+            }
+        } catch {
+            failures.append("temporary transcription buffers: \(error.localizedDescription)")
+        }
+
+        if let applicationSupportURL,
+           fileManager.fileExists(atPath: applicationSupportURL.path) {
+            failures.append(contentsOf: supportDeletionFailures)
+            failures.append("some AirScribe application data remains on disk")
+        } else {
+            // Keep the live stores consistent after the containing directory was
+            // successfully removed, including stores that initially failed to load.
+            try? history.deleteAll()
+            try? meetings.store.deleteAll()
+            await modelManager.removeInstallation()
+            await languagePackManager.removeAndWait()
+            recovery.complete()
+        }
+        if fileManager.fileExists(atPath: temporaryBuffers.path) {
+            failures.append("temporary transcription buffers remain on disk")
+        }
 
         selectedSettingsSection = .general
         selectedMode = .general
@@ -763,7 +871,7 @@ final class AppModel: ObservableObject {
         localeIdentifier = "en-US"
         outputLanguageMode = .original
         useAppleIntelligence = true
-        cloudKeyConfigured = false
+        cloudKeyConfigured = keyRemains
         cloudPolishEnabled = false
         cloudEndpoint = "https://api.openai.com/v1/responses"
         cloudModel = ""
@@ -776,6 +884,8 @@ final class AppModel: ObservableObject {
         correctionLearningTasks.values.forEach { $0.cancel() }
         correctionLearningTasks = [:]
         correctionLearningTaskOrder = []
+        clipboardCorrectionLearningTask?.cancel()
+        clipboardCorrectionLearningTask = nil
         learningFeedbackTask?.cancel()
         learningFeedbackTask = nil
         learnedCorrections = [:]
@@ -803,6 +913,12 @@ final class AppModel: ObservableObject {
         defaults.removePersistentDomain(
             forName: Bundle.main.bundleIdentifier ?? "com.airscribe.mac"
         )
+
+        if !failures.isEmpty {
+            let message = "Some private data could not be deleted: \(failures.joined(separator: "; ")). Try again after closing apps that may be using those files."
+            dataDeletionError = message
+            phase = .error(message)
+        }
     }
 
     func excludeLastApplicationFromContext() {
@@ -866,6 +982,15 @@ final class AppModel: ObservableObject {
             sections.append(activeContext.promptContext)
         }
         return sections.isEmpty ? nil : sections.joined(separator: "\n")
+    }
+
+    private func contextualVocabularyTerms() -> [String] {
+        guard !activeContext.isEmpty else { return [] }
+        return SpeechContextPhrases.extract(from: activeContext.promptContext)
+            .filter { phrase in
+                !phrase.contains(where: \.isWhitespace)
+                    && phrase.allSatisfy { $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" }
+            }
     }
 
     private func contextSummary(_ snapshot: ContextSnapshot) -> String {

@@ -51,10 +51,10 @@ struct PauseAwarePunctuation {
                 edits.append((token.range, capitalized))
             }
 
-            if let desired = punctuation[index], desired != token.trailingPunctuation {
+            if punctuation[index] != token.trailingPunctuation {
                 if let punctuationRange = token.trailingPunctuationRange {
-                    edits.append((punctuationRange, desired))
-                } else {
+                    edits.append((punctuationRange, punctuation[index] ?? ""))
+                } else if let desired = punctuation[index] {
                     edits.append((NSRange(location: NSMaxRange(token.range), length: 0), desired))
                 }
             }
@@ -105,6 +105,28 @@ struct PauseAwarePunctuation {
                !existing.contains(where: { "!?…".contains($0) }) {
                 return targetPunctuation
             }
+            // System transcription commonly turns any noticeable hesitation into
+            // a period. Require both timing and a plausible grammatical boundary
+            // before transferring that period into the on-device transcript.
+            if existing == ".",
+               guideIndex + 1 < guide.count,
+               let timingIndex = timingIndices[guideIndex],
+               let nextTimingIndex = timingIndices[guideIndex + 1],
+               nextTimingIndex > timingIndex {
+                let pause = timings[nextTimingIndex].startTime - timings[timingIndex].endTime
+                guard pause.isFinite, pause >= 0 else { return targetPunctuation }
+                if pause < thresholds.sentence {
+                    return pause >= thresholds.comma
+                        && clauseWordCount(endingAt: guideIndex, guide: guide) >= 3 ? "," : nil
+                }
+                if clauseStartsWithSubordinator(endingAt: guideIndex, guide: guide)
+                    || tightlyConnected(word: guide[guideIndex + 1].normalized) {
+                    return ","
+                }
+                if !strongSentenceStart(word: guide[guideIndex + 1].normalized) {
+                    return ","
+                }
+            }
             return existing
         }
         guard guideIndex + 1 < guide.count,
@@ -122,20 +144,19 @@ struct PauseAwarePunctuation {
             "but", "because", "if", "when", "while", "although", "is", "are", "was", "were",
             "have", "has", "had", "will", "would", "can", "could", "should"
         ]
-        let tightlyConnectedAfter: Set<String> = [
-            "to", "of", "for", "with", "that", "which", "who", "because", "if", "when",
-            "while", "than", "and", "or"
-        ]
-
         if pause >= thresholds.sentence, !incompleteBefore.contains(current) {
-            if tightlyConnectedAfter.contains(next) {
+            if tightlyConnected(word: next)
+                || clauseStartsWithSubordinator(endingAt: guideIndex, guide: guide) {
                 return targetPunctuation ?? ","
             }
-            return terminalPunctuation(before: guideIndex, guide: guide)
+            if strongSentenceStart(word: next) {
+                return terminalPunctuation(before: guideIndex, guide: guide)
+            }
+            return targetPunctuation ?? ","
         }
         if pause >= thresholds.comma,
            !incompleteBefore.contains(current),
-           !tightlyConnectedAfter.contains(next),
+           !tightlyConnected(word: next),
            clauseWordCount(endingAt: guideIndex, guide: guide) >= 3 {
             return targetPunctuation ?? ","
         }
@@ -157,12 +178,42 @@ struct PauseAwarePunctuation {
             .map { $1.startTime - $0.endTime }
             .filter { $0.isFinite && $0 >= 0 && $0 < 1.5 }
             .sorted()
-        guard !gaps.isEmpty else { return (0.48, 1.05) }
+        guard !gaps.isEmpty else { return (0.5, 1.15) }
         let median = gaps[gaps.count / 2]
         return (
-            comma: min(0.68, max(0.38, median * 2.4)),
-            sentence: min(1.15, max(0.72, median * 4.0))
+            comma: min(0.72, max(0.42, median * 2.6)),
+            sentence: min(1.5, max(0.9, median * 5.0))
         )
+    }
+
+    private static func tightlyConnected(word: String) -> Bool {
+        [
+            "to", "of", "for", "with", "that", "which", "who", "because", "if", "when",
+            "whenever", "wherever", "while", "than", "and", "or", "but", "so", "yet"
+        ].contains(word)
+    }
+
+    private static func strongSentenceStart(word: String) -> Bool {
+        [
+            "i", "you", "we", "they", "he", "she", "it", "this", "that", "these", "those",
+            "please", "who", "what", "when", "where", "why", "how", "can", "could", "would",
+            "will", "should", "do", "does", "did", "is", "are", "was", "were", "have", "has"
+        ].contains(word)
+    }
+
+    private static func clauseStartsWithSubordinator(
+        endingAt guideIndex: Int,
+        guide: [Token]
+    ) -> Bool {
+        var start = guideIndex
+        while start > 0 {
+            if guide[start - 1].trailingPunctuation != nil { break }
+            start -= 1
+        }
+        return [
+            "although", "because", "if", "since", "unless", "until", "when", "whenever",
+            "where", "wherever", "while"
+        ].contains(guide[start].normalized)
     }
 
     private static func terminalPunctuation(before guideIndex: Int, guide: [Token]) -> String {
@@ -336,10 +387,11 @@ struct PauseAwarePunctuation {
 }
 
 struct BasicTextEnhancer: Sendable {
-    private static let fillerPatterns = [
-        #"\b(?:um+|uh+|erm+|ah+)\b[,.]?\s*"#,
-        #"\b(?:you know|I mean)\b[,.]?\s*"#,
-        #"\bwith\s+like\s+"#
+    private static let fillerRules: [(pattern: String, replacement: String)] = [
+        (#"\b(?:um+|uh+|erm+|ah+)\b[,.]?\s*"#, ""),
+        (#"^\s*(?:you know|like|let['’]s say)[,.]?\s+"#, ""),
+        (#"(?<=,)\s*(?:you know|I mean|like|let['’]s say)[,.]?\s*"#, " "),
+        (#"\bwith\s+like\s+"#, "with ")
     ]
 
     func enhance(
@@ -351,10 +403,14 @@ struct BasicTextEnhancer: Sendable {
         var text = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return text }
 
-        for pattern in Self.fillerPatterns {
+        // Resolve an explicit repair before removing discourse markers such as
+        // “I mean”; otherwise both the mistaken and corrected word survive.
+        text = resolveSelfCorrections(in: text)
+
+        for rule in Self.fillerRules {
             text = text.replacingOccurrences(
-                of: pattern,
-                with: pattern.contains("with") ? "with " : "",
+                of: rule.pattern,
+                with: rule.replacement,
                 options: [.regularExpression, .caseInsensitive]
             )
         }
@@ -384,10 +440,22 @@ struct BasicTextEnhancer: Sendable {
         for term in vocabulary where !term.isEmpty {
             let escaped = NSRegularExpression.escapedPattern(for: term)
             text = text.replacingOccurrences(of: "(?i)\\b\(escaped)\\b", with: term, options: .regularExpression)
+            if term.count >= 6, term.allSatisfy(\.isLetter) {
+                for split in 3 ... (term.count - 3) {
+                    let index = term.index(term.startIndex, offsetBy: split)
+                    let spaced = NSRegularExpression.escapedPattern(for: String(term[..<index]))
+                        + #"\s+"#
+                        + NSRegularExpression.escapedPattern(for: String(term[index...]))
+                    text = text.replacingOccurrences(
+                        of: #"(?i)\b"# + spaced + #"\b"#,
+                        with: term,
+                        options: .regularExpression
+                    )
+                }
+            }
         }
 
         text = resolveContextualHomophones(in: text)
-        text = resolveSimpleSelfCorrections(in: text)
         text = uppercaseFirstLetter(in: text)
         text = punctuateConversationalOpener(in: text)
 
@@ -433,6 +501,34 @@ struct BasicTextEnhancer: Sendable {
         let atMarker = "\u{E000}"
         let dotMarker = "\u{E001}"
         let hashMarker = "\u{E002}"
+        let literalFullStopMarker = "\u{E003}"
+        let capitalizeAfterMarker = "\u{E004}"
+        var protected = source
+
+        // Preserve “full stop” when grammar shows that the speaker is talking
+        // about the word or punctuation mark. Unclear uses remain words; only
+        // an unambiguous dictation command is converted below.
+        protected = protected.replacingOccurrences(
+            of: #"(\b(?:a|an|the|this|that|another|literal|word|words|phrase|term|text|string|say|says|said|saying|hear|hears|heard|write|writes|wrote|writing|type|types|typed|typing|print|prints|printed|printing|spell|spells|spelled|spelling|pronounce|pronounces|pronounced|pronouncing|call|calls|called|mean|means|meaning|read|reads|show|shows|showed|display|displays|displayed|want|wants|wanted)\s+)full\s+stop\b"#,
+            with: "$1\(literalFullStopMarker)",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        protected = protected.replacingOccurrences(
+            of: #"\bfull\s+stop\b(?=\s+(?:is|isn't|isnt|means|meant|refers|sounds|spells|should|must|can|could|would|was|were|to\s+be|as\s+a)\b)"#,
+            with: literalFullStopMarker,
+            options: [.regularExpression, .caseInsensitive]
+        )
+        protected = protected.replacingOccurrences(
+            of: #"\b((?:what\s+(?:is|does)|(?:word|words|phrase|term|text|string)\s+is)\s+)full\s+stop\b"#,
+            with: "$1\(literalFullStopMarker)",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        protected = protected.replacingOccurrences(
+            of: #"^\s*full\s+stop\s*$"#,
+            with: literalFullStopMarker,
+            options: [.regularExpression, .caseInsensitive]
+        )
+
         let directReplacements: [(pattern: String, replacement: String)] = [
             (#"\b(?:at\s+the\s+rate|at\s+rate|at)\s+(?:symbol|sign)\b"#, atMarker),
             (#"\b(?:dot|period)\s+symbol\b"#, dotMarker),
@@ -444,8 +540,14 @@ struct BasicTextEnhancer: Sendable {
             (#"\bsemicolon\s+symbol\b"#, ";"),
             (#"\bunderscore\s+symbol\b"#, "_"),
             (#"\b(?:slash|forward\s+slash)\s+symbol\b"#, "/"),
+            (#"\bfull\s+stop\s+(?:symbol|mark)\b"#, ".\(capitalizeAfterMarker)"),
+            (
+                #"\bfull\s+stop\b(?=\s+(?:(?:then|next)\s+)?(?:I|you|we|they|he|she|it|this|that|these|those|please|who|what|when|where|why|how|can|could|would|will|should|do|does|did|is|are|was|were|have|has|start|continue|add|make|put|open|close|create|go|take|give|tell|write|read|show|use|keep|move|call|email|send)\b)"#,
+                ".\(capitalizeAfterMarker)"
+            ),
+            (#"\bfull\s+stop\b(?=\s*$)"#, "."),
         ]
-        var text = directReplacements.reduce(source) { result, rule in
+        var text = directReplacements.reduce(protected) { result, rule in
             result.replacingOccurrences(
                 of: rule.pattern,
                 with: rule.replacement,
@@ -468,15 +570,52 @@ struct BasicTextEnhancer: Sendable {
             with: "#",
             options: .regularExpression
         )
+        text = text.replacingOccurrences(of: literalFullStopMarker, with: "full stop")
+        while let markerRange = text.range(of: capitalizeAfterMarker) {
+            let markerOffset = text.distance(from: text.startIndex, to: markerRange.lowerBound)
+            text.removeSubrange(markerRange)
+            let searchStart = text.index(
+                text.startIndex,
+                offsetBy: min(markerOffset, text.count)
+            )
+            if let nextLetter = text[searchStart...].firstIndex(where: \.isLetter) {
+                text.replaceSubrange(
+                    nextLetter ... nextLetter,
+                    with: String(text[nextLetter]).uppercased()
+                )
+            }
+        }
         return text
     }
 
-    private func resolveSimpleSelfCorrections(in source: String) -> String {
-        source.replacingOccurrences(
-            of: #"\b[^,.!?]{1,40}\b\s+(?:no,?\s+wait|sorry,?\s+I mean)\s+"#,
-            with: "",
+    private func resolveSelfCorrections(in source: String) -> String {
+        let explicitRepairRules: [(pattern: String, replacement: String)] = [
+            (
+                #"\b([\p{L}\p{N}'’\-]+)\s*[,—-]?\s+(?:no\s*,?\s*wait|sorry\s*,?\s*(?:I\s+mean)?|I\s+mean|rather|correction)\s*[,—-]?\s+([\p{L}\p{N}'’\-]+)\b"#,
+                "$2"
+            ),
+            (
+                #"\b([\p{L}\p{N}'’\-]+)\s*,?\s+but\s+I\s+meant\s+([\p{L}\p{N}'’\-]+)\b"#,
+                "$2"
+            ),
+            (
+                #"\b([\p{L}\p{N}'’\-]+)\s+(?:because\s+)?([\p{L}\p{N}'’\-]+)\s+is\s+what\s+I\s+meant(?:\s+to\s+say)?\b"#,
+                "$2"
+            ),
+        ]
+        var text = explicitRepairRules.reduce(source) { result, rule in
+            result.replacingOccurrences(
+                of: rule.pattern,
+                with: rule.replacement,
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+        text = text.replacingOccurrences(
+            of: #"\b([\p{L}\p{N}'’\-]+)(?:[\s,]+\1){1,}\b"#,
+            with: "$1",
             options: [.regularExpression, .caseInsensitive]
         )
+        return text
     }
 
     private func uppercaseFirstLetter(in source: String) -> String {

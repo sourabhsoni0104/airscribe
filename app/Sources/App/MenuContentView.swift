@@ -96,6 +96,9 @@ struct MenuContentView: View {
                     Button("Discard recovered audio", role: .destructive) {
                         model.recovery.discardRecoveredFiles()
                     }
+                    if let error = model.recovery.lastError {
+                        Text(error).foregroundStyle(.red)
+                    }
                 }
             }
 

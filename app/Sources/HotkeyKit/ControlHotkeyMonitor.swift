@@ -95,7 +95,7 @@ final class ControlHotkeyMonitor: NSObject {
         if let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .defaultTap,
+            options: .listenOnly,
             eventsOfInterest: eventMask,
             callback: controlHotkeyEventTapCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()

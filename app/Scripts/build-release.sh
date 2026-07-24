@@ -15,7 +15,6 @@ fi
 
 mkdir -p "${OUTPUT_DIR}"
 cd "${APP_DIR}"
-xcodegen generate
 xcodebuild \
   -project AirScribe.xcodeproj \
   -scheme AirScribe \
@@ -34,4 +33,15 @@ xcodebuild \
   -exportOptionsPlist Config/ExportOptions.plist
 
 codesign --verify --deep --strict --verbose=2 "${EXPORT_PATH}/AirScribe.app"
+if codesign -d --entitlements :- "${EXPORT_PATH}/AirScribe.app" 2>&1 \
+    | grep -q 'com.apple.security.get-task-allow'; then
+  print -u2 "Release validation failed: get-task-allow is enabled."
+  exit 1
+fi
+if find "${EXPORT_PATH}/AirScribe.app/Contents/MacOS" \
+    \( -name '*.debug.dylib' -o -name '__preview.dylib' \) -print -quit \
+    | grep -q .; then
+  print -u2 "Release validation failed: debug libraries are present."
+  exit 1
+fi
 print "${EXPORT_PATH}/AirScribe.app"

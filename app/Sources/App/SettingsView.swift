@@ -377,11 +377,16 @@ private struct GeneralSettingsView: View {
                 Picker("Default mode", selection: $model.selectedMode) {
                     ForEach(WritingMode.allCases) { Text($0.rawValue).tag($0) }
                 }
-                TextField("Language locale", text: $model.localeIdentifier)
+                TextField("Language locale (use “auto” for Hindi + English)", text: $model.localeIdentifier)
                 Picker("Output", selection: $model.outputLanguageMode) {
                     ForEach(OutputLanguageMode.allCases) { mode in
                         Label(mode.rawValue, systemImage: mode.systemImage).tag(mode)
                     }
+                }
+                if model.outputLanguageMode == .romanizedHindi {
+                    Text("Keeps Hindi wording and meaning, but writes it in the Latin alphabet. English words remain unchanged. Use the “auto” locale for mixed Hindi and English speech.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Picker("Dictation hotkey", selection: $model.dictationHotkey) {
                     ForEach(DictationHotkey.allCases) { hotkey in
@@ -451,6 +456,9 @@ private struct MaintenanceSettingsView: View {
                     HStack {
                         Button("Show recovered audio") { model.recovery.revealRecoveredFiles() }
                         Button("Discard", role: .destructive) { model.recovery.discardRecoveredFiles() }
+                    }
+                    if let error = model.recovery.lastError {
+                        Text(error).font(.caption).foregroundStyle(.red)
                     }
                 }
             }
@@ -565,7 +573,7 @@ private struct HistorySettingsView: View {
                     .textFieldStyle(.roundedBorder)
                 Button("Delete all", role: .destructive) {
                     stopPlayback()
-                    store.deleteAll()
+                    try? store.deleteAll()
                 }
                     .disabled(store.records.isEmpty)
             }
@@ -708,6 +716,11 @@ private struct PrivacySettingsView: View {
                 Text("Deletes dictation history, meeting transcripts and audio, custom vocabulary, API keys, and all downloaded model files.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let error = model.dataDeletionError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 Button("Delete Everything on This Mac…", role: .destructive) {
                     confirmingDeletion = true
                 }

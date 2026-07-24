@@ -16,6 +16,10 @@ if [[ -z ${DOWNLOAD_PREFIX} ]]; then
   print -u2 "Example: https://github.com/OWNER/REPO/releases/download/v1.0.0/"
   exit 1
 fi
+if [[ ${DOWNLOAD_PREFIX} != https://* ]]; then
+  print -u2 "AIRSCRIBE_DOWNLOAD_URL_PREFIX must use HTTPS."
+  exit 1
+fi
 
 SPARKLE_TOOL=$(find "${DERIVED_DATA}/SourcePackages/artifacts" -type f -path '*/Sparkle/bin/generate_appcast' -print -quit 2>/dev/null || true)
 

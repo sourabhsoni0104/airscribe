@@ -14,6 +14,28 @@ final class TextInserterTests: XCTestCase {
         XCTAssertFalse(TextInserter.isTextInputRole(role: "AXWindow", subrole: nil))
     }
 
+    func testRecognizesTerminalApplications() {
+        XCTAssertTrue(TextInserter.isTerminalApplication(bundleIdentifier: "com.apple.Terminal"))
+        XCTAssertTrue(TextInserter.isTerminalApplication(bundleIdentifier: "com.googlecode.iterm2"))
+        XCTAssertTrue(TextInserter.isTerminalApplication(bundleIdentifier: "dev.warp.Warp-Stable"))
+        XCTAssertFalse(TextInserter.isTerminalApplication(bundleIdentifier: "com.apple.TextEdit"))
+        XCTAssertFalse(TextInserter.isTerminalApplication(bundleIdentifier: nil))
+    }
+
+    func testTerminalTextNeverContainsCommandExecutingControlCharacters() {
+        XCTAssertEqual(
+            TextInserter.terminalSafeText("echo hello\nrm something\t\u{0007}done"),
+            "echo hello rm something done"
+        )
+    }
+
+    func testTerminalTypingChunksPreserveUnicodeCharacters() {
+        let source = "नमस्ते from AirScribe 👋🏽"
+        let chunks = TextInserter.terminalTypingChunks(source, maximumUTF16Count: 8)
+        XCTAssertEqual(chunks.joined(), source)
+        XCTAssertTrue(chunks.allSatisfy { $0.utf16.count <= 8 || $0.count == 1 })
+    }
+
     @MainActor
     func testWritesAndReadsBackExactClipboardText() {
         let pasteboard = NSPasteboard.withUniqueName()
@@ -22,6 +44,31 @@ final class TextInserterTests: XCTestCase {
 
         XCTAssertTrue(TextInserter.write(transcript, to: pasteboard))
         XCTAssertEqual(pasteboard.string(forType: .string), transcript)
+    }
+
+    func testClipboardSnapshotAcceptsTextButRejectsBinaryPayloads() {
+        XCTAssertTrue(TextInserter.isSafeTextPasteboardType(.string))
+        XCTAssertTrue(TextInserter.isSafeTextPasteboardType(.html))
+        XCTAssertFalse(TextInserter.isSafeTextPasteboardType(.png))
+        XCTAssertFalse(TextInserter.isSafeTextPasteboardType(.fileURL))
+    }
+
+    func testFindsRecentlyPastedTextImmediatelyBeforeCaret() {
+        XCTAssertEqual(
+            TextInserter.pastedTextRange(
+                in: "Before Open the text box. After",
+                selection: NSRange(location: 25, length: 0),
+                pastedText: "Open the text box."
+            ),
+            NSRange(location: 7, length: 18)
+        )
+        XCTAssertNil(
+            TextInserter.pastedTextRange(
+                in: "Before unrelated text",
+                selection: NSRange(location: 21, length: 0),
+                pastedText: "Open the text box."
+            )
+        )
     }
 
     func testExtractsCorrectedTextBetweenStableAnchors() {

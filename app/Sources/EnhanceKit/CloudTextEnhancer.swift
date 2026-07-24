@@ -8,12 +8,17 @@ struct CloudPolishConfiguration: Sendable {
 }
 
 actor CloudTextEnhancer {
+    private static let maximumResponseBytes = 1_048_576
+
     func enhance(
         _ text: String,
         instruction: String,
         configuration: CloudPolishConfiguration
     ) async throws -> String {
-        guard configuration.endpoint.scheme?.lowercased() == "https" else {
+        guard configuration.endpoint.scheme?.lowercased() == "https",
+              configuration.endpoint.host != nil,
+              configuration.endpoint.user == nil,
+              configuration.endpoint.password == nil else {
             throw CloudPolishError.insecureEndpoint
         }
         guard !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -23,6 +28,7 @@ actor CloudTextEnhancer {
         var request = URLRequest(url: configuration.endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 45
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(
@@ -41,10 +47,32 @@ actor CloudTextEnhancer {
             )
         )
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.urlCache = nil
+        sessionConfiguration.httpCookieStorage = nil
+        sessionConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(
+            configuration: sessionConfiguration,
+            delegate: NoRedirectURLSessionDelegate(),
+            delegateQueue: nil
+        )
+        defer { session.invalidateAndCancel() }
+
+        let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw CloudPolishError.invalidResponse }
         guard (200 ..< 300).contains(http.statusCode) else {
             throw CloudPolishError.requestFailed(status: http.statusCode)
+        }
+        if response.expectedContentLength > Self.maximumResponseBytes {
+            throw CloudPolishError.responseTooLarge
+        }
+        var data = Data()
+        data.reserveCapacity(Int(max(response.expectedContentLength, 0)))
+        for try await byte in bytes {
+            guard data.count < Self.maximumResponseBytes else {
+                throw CloudPolishError.responseTooLarge
+            }
+            data.append(byte)
         }
         let payload = try JSONDecoder().decode(ResponsePayload.self, from: data)
         let result = payload.resolvedText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -58,16 +86,24 @@ struct CloudAPIKeyStore: Sendable {
     private let account = "byok"
 
     func read() throws -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+        let query = readQuery(dataProtection: true)
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
+        if status == errSecItemNotFound {
+            var legacyItem: CFTypeRef?
+            let legacyStatus = SecItemCopyMatching(
+                readQuery(dataProtection: false) as CFDictionary,
+                &legacyItem
+            )
+            if legacyStatus == errSecItemNotFound { return nil }
+            guard legacyStatus == errSecSuccess,
+                  let data = legacyItem as? Data,
+                  let value = String(data: data, encoding: .utf8) else {
+                throw CloudPolishError.keychain(status: legacyStatus)
+            }
+            try save(value)
+            return value
+        }
         guard status == errSecSuccess,
               let data = item as? Data,
               let value = String(data: data, encoding: .utf8) else {
@@ -78,34 +114,65 @@ struct CloudAPIKeyStore: Sendable {
 
     func save(_ value: String) throws {
         let data = Data(value.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+        let query = baseQuery(dataProtection: true)
+        let update: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
-        let update = [kSecValueData as String: data]
         let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
             var add = query
             add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             let addStatus = SecItemAdd(add as CFDictionary, nil)
             guard addStatus == errSecSuccess else { throw CloudPolishError.keychain(status: addStatus) }
         } else if status != errSecSuccess {
             throw CloudPolishError.keychain(status: status)
         }
+        let legacyStatus = SecItemDelete(baseQuery(dataProtection: false) as CFDictionary)
+        guard legacyStatus == errSecSuccess || legacyStatus == errSecItemNotFound else {
+            throw CloudPolishError.keychain(status: legacyStatus)
+        }
     }
 
     func delete() throws {
-        let query: [String: Any] = [
+        let protectedStatus = SecItemDelete(baseQuery(dataProtection: true) as CFDictionary)
+        let legacyStatus = SecItemDelete(baseQuery(dataProtection: false) as CFDictionary)
+        for status in [protectedStatus, legacyStatus]
+        where status != errSecSuccess && status != errSecItemNotFound {
+            throw CloudPolishError.keychain(status: status)
+        }
+    }
+
+    private func baseQuery(dataProtection: Bool) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw CloudPolishError.keychain(status: status)
+        if dataProtection {
+            query[kSecUseDataProtectionKeychain as String] = true
         }
+        return query
+    }
+
+    private func readQuery(dataProtection: Bool) -> [String: Any] {
+        var query = baseQuery(dataProtection: dataProtection)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        return query
+    }
+}
+
+private final class NoRedirectURLSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }
 
@@ -161,6 +228,7 @@ enum CloudPolishError: LocalizedError {
     case missingKey
     case invalidResponse
     case requestFailed(status: Int)
+    case responseTooLarge
     case emptyResponse
     case keychain(status: OSStatus)
 
@@ -171,6 +239,7 @@ enum CloudPolishError: LocalizedError {
         case .missingKey: "Save an API key before enabling cloud polish."
         case .invalidResponse: "The cloud polish provider returned an invalid response."
         case let .requestFailed(status): "Cloud polish failed with HTTP status \(status)."
+        case .responseTooLarge: "Cloud polish returned more data than AirScribe can safely process."
         case .emptyResponse: "Cloud polish returned no text."
         case .keychain: "The API key could not be stored securely in Keychain."
         }

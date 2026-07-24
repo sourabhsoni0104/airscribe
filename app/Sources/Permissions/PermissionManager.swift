@@ -29,6 +29,10 @@ final class PermissionManager: ObservableObject {
         monitoringTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 self?.refresh()
+                if self?.accessibilityGranted == true {
+                    self?.monitoringTask = nil
+                    return
+                }
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }

@@ -84,10 +84,53 @@ final class HistoryStoreTests: XCTestCase {
         let orphanedAudio = try store.newAudioURL()
         try Data([1, 2, 3]).write(to: orphanedAudio)
 
-        store.deleteAll()
+        try store.deleteAll()
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphanedAudio.path))
         XCTAssertTrue(store.records.isEmpty)
+    }
+
+    func testCorruptHistoryIsNotOverwrittenByAddingARecord() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appending(path: "AirScribe", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let historyURL = directory.appending(path: "history.json")
+        let damagedData = Data("{not-json".utf8)
+        try damagedData.write(to: historyURL)
+
+        let store = HistoryStore(applicationSupportRoot: root)
+
+        XCTAssertThrowsError(try store.add(makeRecord()))
+        XCTAssertEqual(try Data(contentsOf: historyURL), damagedData)
+        XCTAssertNotNil(store.lastError)
+    }
+
+    func testDeletingCorruptHistoryAllowsSavingAgain() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appending(path: "AirScribe", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("{not-json".utf8).write(to: directory.appending(path: "history.json"))
+        let store = HistoryStore(applicationSupportRoot: root)
+
+        try store.deleteAll()
+        try store.add(makeRecord())
+
+        XCTAssertEqual(store.records.count, 1)
+    }
+
+    func testSensitiveHistoryFilesUseOwnerOnlyPermissions() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = HistoryStore(applicationSupportRoot: root)
+        let audioURL = try store.newAudioURL()
+        try store.add(makeRecord(audioPath: audioURL.path))
+        let historyURL = root.appending(path: "AirScribe/history.json")
+
+        XCTAssertEqual(posixPermissions(at: audioURL), 0o600)
+        XCTAssertEqual(posixPermissions(at: historyURL), 0o600)
+        XCTAssertEqual(posixPermissions(at: historyURL.deletingLastPathComponent()), 0o700)
     }
 
     private func makeRecord(
@@ -109,5 +152,10 @@ final class HistoryStoreTests: XCTestCase {
     private func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory
             .appending(path: "AirScribeHistoryTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+    }
+
+    private func posixPermissions(at url: URL) -> Int {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.posixPermissions] as? NSNumber)?.intValue ?? -1
     }
 }

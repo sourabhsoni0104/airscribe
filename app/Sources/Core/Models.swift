@@ -33,6 +33,7 @@ enum WritingMode: String, Codable, CaseIterable, Identifiable, Sendable {
 
 enum OutputLanguageMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case original = "Original language"
+    case romanizedHindi = "Romanized Hindi"
     case english = "Translate to English"
 
     var id: String { rawValue }
@@ -40,6 +41,7 @@ enum OutputLanguageMode: String, Codable, CaseIterable, Identifiable, Sendable {
     var systemImage: String {
         switch self {
         case .original: "character.book.closed"
+        case .romanizedHindi: "textformat.abc"
         case .english: "translate"
         }
     }

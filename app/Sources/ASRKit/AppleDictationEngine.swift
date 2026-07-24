@@ -16,6 +16,11 @@ struct AppleDictationEngine: TranscriptionEngine {
         }
 
         var preset = DictationTranscriber.Preset.progressiveShortDictation
+        // Keep spoken punctuation as words so AirScribe can distinguish a
+        // command ("send it full stop") from discussion of the term ("the
+        // words full stop"). Apple's punctuation option otherwise destroys
+        // that distinction before the transcript reaches our context logic.
+        preset.transcriptionOptions.remove(.punctuation)
         preset.attributeOptions.insert(.audioTimeRange)
         let transcriber = DictationTranscriber(locale: supportedLocale, preset: preset)
         let modules: [any SpeechModule] = [transcriber]
@@ -31,7 +36,9 @@ struct AppleDictationEngine: TranscriptionEngine {
         )
         let analysisContext = AnalysisContext()
         var contextualPhrases = ["AirScribe", "Hey AirScribe", "air scribe"]
-        if let context, !context.isEmpty { contextualPhrases.append(context) }
+        if let context, !context.isEmpty {
+            contextualPhrases.append(contentsOf: SpeechContextPhrases.extract(from: context))
+        }
         analysisContext.contextualStrings[.general] = contextualPhrases
         try await analyzer.setContext(analysisContext)
         try await analyzer.prepareToAnalyze(in: format)
@@ -59,6 +66,63 @@ struct AppleDictationEngine: TranscriptionEngine {
         @unknown default:
             throw AirScribeError.speechUnavailable
         }
+    }
+}
+
+enum SpeechContextPhrases {
+    private static let ignoredWords: Set<String> = [
+        "active", "application", "clipboard", "context", "focused", "preferred", "screen",
+        "speaker", "text", "visible", "window", "with", "from", "that", "this", "these",
+        "those", "their", "there", "then", "than", "have", "will", "would", "could",
+        "should", "about", "into", "your", "you", "they", "them", "what", "when", "where"
+    ]
+
+    static func extract(from context: String, maximumCount: Int = 80) -> [String] {
+        var phrases: [String] = []
+        var seen = Set<String>()
+
+        func append(_ candidate: String) {
+            let cleaned = candidate
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            guard cleaned.count >= 2, cleaned.count <= 120 else { return }
+            let key = cleaned.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: .current
+            )
+            guard seen.insert(key).inserted else { return }
+            phrases.append(cleaned)
+        }
+
+        for rawLine in context.components(separatedBy: .newlines) where phrases.count < maximumCount {
+            let pieces = rawLine.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            let label = pieces.count == 2 ? pieces[0].lowercased() : ""
+            let payload = String(pieces.count == 2 ? pieces[1] : pieces[0])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !payload.isEmpty else { continue }
+
+            if label.contains("preferred vocabulary") {
+                payload.split(separator: ",").forEach { append(String($0)) }
+                continue
+            }
+
+            payload
+                .split(whereSeparator: { ".!?;\n".contains($0) })
+                .map(String.init)
+                .filter { !$0.isEmpty && $0.count <= 120 }
+                .forEach(append)
+
+            let words = payload.split { character in
+                !character.isLetter && !character.isNumber && character != "'" && character != "’" && character != "-"
+            }
+            for word in words {
+                let value = String(word)
+                let normalized = value.lowercased()
+                guard value.count >= 4, !ignoredWords.contains(normalized) else { continue }
+                append(value)
+                if phrases.count >= maximumCount { break }
+            }
+        }
+        return Array(phrases.prefix(maximumCount))
     }
 }
 

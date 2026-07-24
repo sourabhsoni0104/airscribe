@@ -13,6 +13,7 @@ final class RecoveryStore: ObservableObject {
     static let shared = RecoveryStore()
 
     @Published private(set) var interruptedSession: InterruptedSession?
+    @Published private(set) var lastError: String?
     private let defaults: UserDefaults
     private let key: String
 
@@ -32,6 +33,11 @@ final class RecoveryStore: ObservableObject {
     func complete() {
         defaults.removeObject(forKey: key)
         interruptedSession = nil
+        lastError = nil
+    }
+
+    func presentMarkedSession() {
+        interruptedSession = decode()
     }
 
     func revealRecoveredFiles() {
@@ -42,16 +48,37 @@ final class RecoveryStore: ObservableObject {
         if let first = files.first { NSWorkspace.shared.activateFileViewerSelecting([first]) }
     }
 
-    func discardRecoveredFiles() {
-        guard let session = interruptedSession else { return }
+    @discardableResult
+    func discardRecoveredFiles() -> Bool {
+        guard let session = interruptedSession else { return true }
+        var failures: [String] = []
+        guard let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            lastError = "Recovered audio could not be deleted because Application Support could not be located."
+            return false
+        }
+        let support = applicationSupport
+            .appending(path: "AirScribe", directoryHint: .isDirectory)
+            .standardizedFileURL.path + "/"
         for path in session.audioPaths {
             let url = URL(fileURLWithPath: path).standardizedFileURL
-            let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                .appending(path: "AirScribe", directoryHint: .isDirectory).standardizedFileURL.path + "/"
             guard url.path.hasPrefix(support) else { continue }
-            try? FileManager.default.removeItem(at: url)
+            do {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            } catch {
+                failures.append(url.lastPathComponent)
+            }
+        }
+        guard failures.isEmpty else {
+            lastError = "Some recovered audio could not be deleted: \(failures.joined(separator: ", "))."
+            return false
         }
         complete()
+        return true
     }
 
     private func decode() -> InterruptedSession? {

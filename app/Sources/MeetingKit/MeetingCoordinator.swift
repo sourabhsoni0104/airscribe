@@ -80,9 +80,11 @@ final class MeetingCoordinator: ObservableObject {
             self.systemSession = systemSession
 
             let microphoneURL = try store.newAudioURL(source: .you)
-            let systemURL = try store.newAudioURL(source: .computer)
             self.microphoneURL = microphoneURL
+            recovery.mark(.meeting, audioPaths: [microphoneURL.path])
+            let systemURL = try store.newAudioURL(source: .computer)
             self.systemURL = systemURL
+            recovery.mark(.meeting, audioPaths: [microphoneURL.path, systemURL.path])
             let writer = try LockedAudioFileWriter(url: systemURL, format: systemSession.requiredAudioFormat)
             systemWriter = writer
 
@@ -113,8 +115,12 @@ final class MeetingCoordinator: ObservableObject {
                 await systemSession.cancel()
                 self.systemSession = nil
                 systemWriter = nil
-                try? FileManager.default.removeItem(at: systemURL)
-                self.systemURL = nil
+                do {
+                    try FileManager.default.removeItem(at: systemURL)
+                    self.systemURL = nil
+                } catch {
+                    systemAudioStatus = "System audio unavailable — cleanup pending"
+                }
             }
 
             startedAt = Date()
@@ -132,9 +138,13 @@ final class MeetingCoordinator: ObservableObject {
             self.systemSession = nil
             await microphoneSession?.cancel()
             await systemSession?.cancel()
-            removeUnfinishedFiles()
-            recovery.complete()
-            state = .error(error.localizedDescription)
+            let cleanupFailures = removeUnfinishedFiles()
+            if cleanupFailures.isEmpty {
+                recovery.complete()
+            } else {
+                recovery.presentMarkedSession()
+            }
+            state = .error(errorMessage(error, cleanupFailures: cleanupFailures))
         }
     }
 
@@ -144,8 +154,9 @@ final class MeetingCoordinator: ObservableObject {
         elapsedTask?.cancel()
         elapsedTask = nil
         let audioRecordingError = stopCaptureHardware()
+        var cleanupFailures: [String] = []
         if audioRecordingError != nil {
-            removeUnfinishedFiles()
+            cleanupFailures = removeUnfinishedFiles()
         }
 
         let microphoneSession = self.microphoneSession
@@ -159,7 +170,17 @@ final class MeetingCoordinator: ObservableObject {
             var (microphoneCapture, systemCapture) = try await (microphoneResult, systemResult)
             var microphoneText = microphoneCapture.text
             var systemText = systemCapture.text
-            if outputLanguageMode == .english {
+            switch outputLanguageMode {
+            case .original:
+                break
+            case .romanizedHindi:
+                if !microphoneText.isEmpty {
+                    microphoneText = await translator.romanizeHindi(microphoneText)
+                }
+                if !systemText.isEmpty {
+                    systemText = await translator.romanizeHindi(systemText)
+                }
+            case .english:
                 if !microphoneText.isEmpty {
                     microphoneText = (try? await translator.translateToEnglish(microphoneText)) ?? microphoneText
                 }
@@ -216,15 +237,24 @@ final class MeetingCoordinator: ObservableObject {
             liveTranscript = transcript
             microphoneURL = nil
             systemURL = nil
-            recovery.complete()
+            if cleanupFailures.isEmpty {
+                recovery.complete()
+            } else {
+                recovery.presentMarkedSession()
+            }
             state = .complete
             if let audioRecordingError {
-                lastWarning = "The transcript was saved, but meeting audio could not be written: \(audioRecordingError.localizedDescription)"
+                lastWarning = errorMessage(audioRecordingError, cleanupFailures: cleanupFailures)
             }
         } catch {
-            removeUnfinishedFiles()
-            recovery.complete()
-            state = .error(error.localizedDescription)
+            cleanupFailures.append(contentsOf: removeUnfinishedFiles())
+            cleanupFailures = Array(Set(cleanupFailures)).sorted()
+            if cleanupFailures.isEmpty {
+                recovery.complete()
+            } else {
+                recovery.presentMarkedSession()
+            }
+            state = .error(errorMessage(error, cleanupFailures: cleanupFailures))
         }
     }
 
@@ -246,10 +276,16 @@ final class MeetingCoordinator: ObservableObject {
         async let cancelMicrophone: Void = microphoneSession?.cancel() ?? ()
         async let cancelSystem: Void = systemSession?.cancel() ?? ()
         _ = await (cancelMicrophone, cancelSystem)
-        removeUnfinishedFiles()
-        recovery.complete()
+        let cleanupFailures = removeUnfinishedFiles()
+        if cleanupFailures.isEmpty {
+            recovery.complete()
+        } else {
+            recovery.presentMarkedSession()
+        }
         resetCaptureState()
-        state = .idle
+        state = cleanupFailures.isEmpty
+            ? .idle
+            : .error("Some meeting audio could not be deleted: \(cleanupFailures.joined(separator: ", ")).")
     }
 
     private func finish(_ session: (any TranscriptionSession)?) async throws -> MeetingTranscriptionResult {
@@ -306,11 +342,25 @@ final class MeetingCoordinator: ObservableObject {
         return microphoneError ?? systemError
     }
 
-    private func removeUnfinishedFiles() {
-        if let microphoneURL { try? FileManager.default.removeItem(at: microphoneURL) }
-        if let systemURL { try? FileManager.default.removeItem(at: systemURL) }
+    private func removeUnfinishedFiles() -> [String] {
+        var failures: [String] = []
+        for url in [microphoneURL, systemURL].compactMap({ $0 }) {
+            do {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            } catch {
+                failures.append(url.lastPathComponent)
+            }
+        }
         microphoneURL = nil
         systemURL = nil
+        return failures
+    }
+
+    private func errorMessage(_ error: Error, cleanupFailures: [String]) -> String {
+        guard !cleanupFailures.isEmpty else { return error.localizedDescription }
+        return "\(error.localizedDescription) Some meeting audio could not be deleted: \(cleanupFailures.joined(separator: ", "))."
     }
 
     private func defaultTitle(for date: Date) -> String {

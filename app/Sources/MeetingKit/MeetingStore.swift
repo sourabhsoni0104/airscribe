@@ -74,6 +74,7 @@ final class MeetingStore: ObservableObject {
     let audioDirectory: URL
     private let recordsURL: URL
     private let fileManager: FileManager
+    private var loadFailure: Error?
 
     init(fileManager: FileManager = .default, applicationSupportRoot: URL? = nil) {
         self.fileManager = fileManager
@@ -83,19 +84,35 @@ final class MeetingStore: ObservableObject {
         audioDirectory = root.appending(path: "MeetingAudio", directoryHint: .isDirectory)
         recordsURL = root.appending(path: "meetings.json")
         do {
-            try fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+            try secureDirectory(root)
+            try secureDirectory(audioDirectory)
+            secureExistingFiles()
             try load()
         } catch {
+            loadFailure = error
             lastError = "Meeting history could not be loaded: \(error.localizedDescription)"
         }
     }
 
     func newAudioURL(source: MeetingSpeaker) throws -> URL {
-        try fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
-        return audioDirectory.appending(path: "\(UUID().uuidString)-\(source.rawValue.lowercased()).caf")
+        try secureDirectory(audioDirectory)
+        let url = audioDirectory.appending(path: "\(UUID().uuidString)-\(source.rawValue.lowercased()).caf")
+        guard fileManager.createFile(
+            atPath: url.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return url
     }
 
     func add(_ record: MeetingRecord) throws {
+        guard loadFailure == nil else {
+            let error = MeetingStoreError.unavailableUntilRecovery
+            lastError = error.localizedDescription
+            throw error
+        }
         let previousRecords = records
         records.insert(record, at: 0)
         do {
@@ -124,45 +141,47 @@ final class MeetingStore: ObservableObject {
     }
 
     func delete(_ record: MeetingRecord) {
+        do {
+            try deleteManagedAudio(at: record.microphoneAudioPath)
+            try deleteManagedAudio(at: record.systemAudioPath)
+        } catch {
+            lastError = "The meeting and its audio could not be deleted: \(error.localizedDescription)"
+            return
+        }
+
         let previousRecords = records
         records.removeAll { $0.id == record.id }
         do {
             try save()
+            lastError = nil
         } catch {
             records = previousRecords
             lastError = "The meeting could not be deleted: \(error.localizedDescription)"
-            return
-        }
-
-        do {
-            try deleteManagedAudio(at: record.microphoneAudioPath)
-            try deleteManagedAudio(at: record.systemAudioPath)
-            lastError = nil
-        } catch {
-            lastError = "The meeting was deleted, but some audio could not be removed: \(error.localizedDescription)"
         }
     }
 
-    func deleteAll() {
+    func deleteAll() throws {
         let previousRecords = records
+        do {
+            if fileManager.fileExists(atPath: audioDirectory.path) {
+                try fileManager.removeItem(at: audioDirectory)
+            }
+        } catch {
+            lastError = "Meeting audio could not be deleted: \(error.localizedDescription)"
+            throw error
+        }
+
         records.removeAll()
         do {
             if fileManager.fileExists(atPath: recordsURL.path) {
                 try fileManager.removeItem(at: recordsURL)
             }
+            loadFailure = nil
+            lastError = nil
         } catch {
             records = previousRecords
             lastError = "Meeting history could not be deleted: \(error.localizedDescription)"
-            return
-        }
-
-        do {
-            if fileManager.fileExists(atPath: audioDirectory.path) {
-                try fileManager.removeItem(at: audioDirectory)
-            }
-            lastError = nil
-        } catch {
-            lastError = "Meeting history was deleted, but some audio could not be removed: \(error.localizedDescription)"
+            throw error
         }
     }
 
@@ -188,8 +207,9 @@ final class MeetingStore: ObservableObject {
 
     private func save() throws {
         let data = try JSONEncoder().encode(records)
-        try fileManager.createDirectory(at: recordsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try secureDirectory(recordsURL.deletingLastPathComponent())
         try data.write(to: recordsURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: recordsURL.path)
     }
 
     private func deleteManagedAudio(at path: String?) throws {
@@ -202,9 +222,41 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    private func secureDirectory(_ url: URL) throws {
+        try fileManager.createDirectory(
+            at: url,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+    }
+
+    private func secureExistingFiles() {
+        if fileManager.fileExists(atPath: recordsURL.path) {
+            try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: recordsURL.path)
+        }
+        guard let enumerator = fileManager.enumerator(
+            at: audioDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return }
+        for case let url as URL in enumerator {
+            if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
+        }
+    }
+
     private func sanitized(_ value: String) -> String {
         value.replacingOccurrences(of: #"[^A-Za-z0-9 _-]"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: " ", with: "-")
+    }
+}
+
+private enum MeetingStoreError: LocalizedError {
+    case unavailableUntilRecovery
+
+    var errorDescription: String? {
+        "Meeting history is damaged and was not overwritten. Delete all local data or restore the meetings file before saving another meeting."
     }
 }
 

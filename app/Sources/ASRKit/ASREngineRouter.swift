@@ -41,16 +41,19 @@ final class ASREngineRouter: TranscriptionEngine, @unchecked Sendable {
         preferExtendedLanguages: Bool = false,
         partialResult: @escaping @Sendable (String) -> Void
     ) async throws -> any TranscriptionSession {
+        let automaticallyDetectLanguage = locale.identifier.lowercased() == "auto"
+        let appleLocale = automaticallyDetectLanguage ? Locale.current : locale
+        let modelLanguageCode = automaticallyDetectLanguage
+            ? nil
+            : locale.language.languageCode?.identifier
+
         if preferExtendedLanguages, languagePackManager.state == .installed {
-            let languageCode = locale.identifier == "auto"
-                ? nil
-                : locale.language.languageCode?.identifier
             let extended = ExtendedLanguageTranscriptionSession(
                 runtime: languagePackManager.runtime,
-                language: languageCode
+                language: modelLanguageCode
             )
             if let apple = try? await appleEngine.makeSession(
-                locale: locale.identifier == "auto" ? Locale.current : locale,
+                locale: appleLocale,
                 context: context,
                 partialResult: partialResult
             ) {
@@ -61,22 +64,21 @@ final class ASREngineRouter: TranscriptionEngine, @unchecked Sendable {
 
         guard modelManager.state == .installed else {
             return try await appleEngine.makeSession(
-                locale: locale,
+                locale: appleLocale,
                 context: context,
                 partialResult: partialResult
             )
         }
 
-        let languageCode = locale.language.languageCode?.identifier
         if let apple = try? await appleEngine.makeSession(
-            locale: locale,
+            locale: appleLocale,
             context: context,
             partialResult: partialResult
         ) {
             let qwen = QwenTranscriptionSession(
                 runtime: qwenRuntime,
                 requiredAudioFormat: apple.requiredAudioFormat,
-                language: languageCode,
+                language: modelLanguageCode,
                 context: context
             )
             return HybridTranscriptionSession(apple: apple, qwen: qwen)
@@ -84,7 +86,7 @@ final class ASREngineRouter: TranscriptionEngine, @unchecked Sendable {
 
         return QwenTranscriptionSession(
             runtime: qwenRuntime,
-            language: languageCode,
+            language: modelLanguageCode,
             context: context
         )
     }
@@ -195,6 +197,10 @@ actor QwenASRRuntime {
 
     func prepare() async throws {
         guard model == nil else { return }
+        let directory = modelDirectory
+        try await Task.detached(priority: .utility) {
+            try ModelManager.validateInstallation(in: directory)
+        }.value
         model = try await Qwen3ASRModel.fromPretrained(
             modelId: ModelManager.modelID,
             cacheDir: modelDirectory,
