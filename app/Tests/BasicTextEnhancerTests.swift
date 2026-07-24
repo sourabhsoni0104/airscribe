@@ -8,7 +8,11 @@ final class BasicTextEnhancerTests: XCTestCase {
     func testRemovesFillersAndExpandsYou() {
         let input = "hey um can u help me with like writing an email to my boss about um vacation"
         let output = enhancer.enhance(input, mode: .email)
-        XCTAssertEqual(output, "Hey, can you help me with writing an email to my boss about vacation?")
+        // Email mode now supplies the sign-off the speaker did not dictate.
+        XCTAssertEqual(
+            output,
+            "Hey, can you help me with writing an email to my boss about vacation?\n\nRegards,"
+        )
     }
 
     func testKeepsSingleLetterAbbreviationsWhenExpandingYou() {
@@ -367,18 +371,57 @@ final class BasicTextEnhancerTests: XCTestCase {
         )
     }
 
-    func testEmailModeDoesNotInventBoilerplate() {
+    func testEmailModeWrapsACasualMessageInformally() {
         XCTAssertEqual(
-            enhancer.enhance("can we meet today", mode: .email),
-            "Can we meet today?"
+            enhancer.enhance("quick question, can we meet today", mode: .email),
+            "Hi,\n\nQuick question, can we meet today?\n\nRegards,"
         )
     }
 
-    func testEmailModePreservesExplicitGreetingAndSignOff() {
+    func testEmailModeWrapsAFormalMessageFormally() {
+        XCTAssertEqual(
+            enhancer.enhance(
+                "kindly review the attached proposal at your earliest convenience",
+                mode: .email
+            ),
+            "Dear Sir/Madam,\n\nKindly review the attached proposal at your earliest convenience.\n\nThanking you,\n\nYours sincerely,"
+        )
+    }
+
+    func testEmailModeAddsNothingTheSpeakerAlreadyDictated() {
         XCTAssertEqual(
             enhancer.enhance("Hi Alex, can we meet today? Thanks,", mode: .email),
             "Hi Alex, can we meet today? Thanks,"
         )
+    }
+
+    func testEmailModeSuppliesOnlyTheMissingHalf() {
+        // A greeting was dictated, so only the sign-off is added.
+        XCTAssertEqual(
+            enhancer.enhance("Hi Alex, can we meet today", mode: .email),
+            "Hi Alex, can we meet today?\n\nRegards,"
+        )
+    }
+
+    func testEmailModeNeverInventsARecipientName() {
+        let output = enhancer.enhance("please send the invoice", mode: .email)
+        XCTAssertTrue(output.hasPrefix("Hi,\n\n") || output.hasPrefix("Dear Sir/Madam,\n\n"))
+        XCTAssertFalse(output.contains("[") , "No placeholder recipient may appear")
+    }
+
+    func testEmailFramingCanBeTurnedOff() {
+        XCTAssertEqual(
+            enhancer.enhance("can we meet today", mode: .email, framesEmail: false),
+            "Can we meet today?"
+        )
+    }
+
+    func testOtherModesAreNeverFramed() {
+        XCTAssertEqual(
+            enhancer.enhance("kindly review the attached proposal", mode: .general),
+            "Kindly review the attached proposal."
+        )
+        XCTAssertEqual(enhancer.enhance("can we meet today", mode: .chat), "Can we meet today?")
     }
 
     func testFullEnhancerPreservesParagraphBreaks() {

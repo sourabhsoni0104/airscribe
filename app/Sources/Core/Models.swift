@@ -20,7 +20,7 @@ enum WritingMode: String, Codable, CaseIterable, Identifiable, Sendable {
     var enhancementInstruction: String {
         switch self {
         case .email:
-            "Rewrite only the main body as concise, professional email prose. Do not add a greeting, subject, signature, or sign-off. Preserve the speaker's intent and do not add facts."
+            "Rewrite only the main body as clear email prose, matching how formal or casual the message already sounds. Keep any greeting and sign-off lines exactly as they are, and do not add a subject line, a recipient name, or facts of your own."
         case .chat:
             "Write concise, natural chat prose. Keep the tone conversational and do not add facts."
         case .post:

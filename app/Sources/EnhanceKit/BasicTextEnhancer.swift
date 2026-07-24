@@ -411,7 +411,8 @@ struct BasicTextEnhancer: Sendable {
         _ source: String,
         mode: WritingMode,
         vocabulary: [String] = [],
-        learnedCorrections: [String: String] = [:]
+        learnedCorrections: [String: String] = [:],
+        framesEmail: Bool = true
     ) -> String {
         var text = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return text }
@@ -494,7 +495,7 @@ struct BasicTextEnhancer: Sendable {
         text = uppercaseFirstLetter(in: text)
         text = punctuateConversationalOpener(in: text)
 
-        let endsWithEmailSignOff = mode == .email && hasEmailSignOff(text)
+        let endsWithEmailSignOff = mode == .email && EmailFraming.hasSignOff(text)
         if let last = text.last, !".!?…".contains(last), !endsWithEmailSignOff {
             // Question wins over tone: a short chat question takes "?", not "!".
             if looksLikeQuestion(text[...]) {
@@ -507,6 +508,12 @@ struct BasicTextEnhancer: Sendable {
         }
 
         text = punctuateDirectSpeech(in: text)
+
+        // Dictation gives you the body of an email and nothing else. Wrap it in a
+        // greeting and sign-off that match how the message reads.
+        if mode == .email, framesEmail {
+            text = EmailFraming.framed(text)
+        }
 
         return text
     }
@@ -774,20 +781,43 @@ struct BasicTextEnhancer: Sendable {
         return "\(attribution), “\(spoken)\(terminal)”"
     }
 
-    private func hasEmailSignOff(_ text: String) -> Bool {
-        text.range(
-            of: #"(?i)(?:^|\n|[.!?]\s+)(?:best|best regards|kind regards|regards|thanks|thank you|sincerely|cheers)[,!]?\s*$"#,
-            options: .regularExpression
-        ) != nil
-    }
 
+    private static let interrogativeOpeners: Set<String> = [
+        "who", "what", "when", "where", "why", "how", "can", "could", "would",
+        "will", "do", "does", "did", "is", "are", "should", "shall", "may"
+    ]
+
+    /// Whether the sentence reads as a question.
+    ///
+    /// Checking only the opening word missed the common shape where the question
+    /// arrives after an aside: "quick question, can we meet today", or "Hi Alex,
+    /// can we meet today". The final clause is therefore checked too, unless it is
+    /// negated, since "the report is ready, do not send it" is an instruction.
     private func looksLikeQuestion(_ source: Substring) -> Bool {
-        let words = source
-            .split(whereSeparator: { $0.isWhitespace || $0 == "," })
-            .map { $0.lowercased() }
-        let greetingWords = ["hey", "hi", "hello"]
-        let first = words.first.flatMap { greetingWords.contains($0) ? words.dropFirst().first : $0 } ?? ""
-        return ["who", "what", "when", "where", "why", "how", "can", "could", "would", "will", "do", "does", "is", "are"].contains(first)
+        let clauses = source
+            .split(separator: ",", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !clauses.isEmpty else { return false }
+
+        func words(_ clause: String) -> [String] {
+            clause.split(whereSeparator: \.isWhitespace).map { $0.lowercased() }
+        }
+
+        let greetings: Set<String> = ["hey", "hi", "hello", "dear", "respected"]
+        let openingWords = words(clauses[0])
+        let opener = openingWords.first.flatMap {
+            greetings.contains($0) ? openingWords.dropFirst().first : $0
+        } ?? ""
+        if Self.interrogativeOpeners.contains(opener) { return true }
+
+        guard clauses.count > 1 else { return false }
+        let finalWords = words(clauses[clauses.count - 1])
+        guard let finalOpener = finalWords.first,
+              Self.interrogativeOpeners.contains(finalOpener) else { return false }
+        let negations: Set<String> = ["not", "n't", "never"]
+        if let second = finalWords.dropFirst().first, negations.contains(second) { return false }
+        return true
     }
 }
 

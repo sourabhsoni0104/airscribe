@@ -100,6 +100,11 @@ final class AppModel: ObservableObject {
     @Published var clipboardFallbackEnabled: Bool {
         didSet { defaults.set(clipboardFallbackEnabled, forKey: Keys.clipboardFallbackEnabled) }
     }
+    /// Whether Email mode wraps a dictated body in a greeting and sign-off that
+    /// match its register. See `EmailFraming`.
+    @Published var emailFramingEnabled: Bool {
+        didSet { defaults.set(emailFramingEnabled, forKey: Keys.emailFramingEnabled) }
+    }
 
     var cloudEndpointHost: String {
         URL(string: cloudEndpoint)?.host?.lowercased() ?? ""
@@ -209,6 +214,7 @@ final class AppModel: ObservableObject {
         static let excludedContextApps = "excludedContextApps"
         static let acknowledgedCloudHost = "acknowledgedCloudHost"
         static let clipboardFallbackEnabled = "clipboardFallbackEnabled"
+        static let emailFramingEnabled = "emailFramingEnabled"
 
         /// Every key this app writes to its defaults domain.
         ///
@@ -223,7 +229,7 @@ final class AppModel: ObservableObject {
             automaticModeSelection, appModeMappings, cloudPolishEnabled, cloudEndpoint,
             cloudModel, waitForPolish, contextAwarenessEnabled, clipboardContextEnabled,
             screenContextEnabled, assistantEnabled, excludedContextApps,
-            acknowledgedCloudHost, clipboardFallbackEnabled
+            acknowledgedCloudHost, clipboardFallbackEnabled, emailFramingEnabled
         ]
     }
 
@@ -280,6 +286,7 @@ final class AppModel: ObservableObject {
         excludedContextApps = defaults.stringArray(forKey: Keys.excludedContextApps) ?? []
         acknowledgedCloudHost = defaults.string(forKey: Keys.acknowledgedCloudHost) ?? ""
         clipboardFallbackEnabled = defaults.object(forKey: Keys.clipboardFallbackEnabled) as? Bool ?? true
+        emailFramingEnabled = defaults.object(forKey: Keys.emailFramingEnabled) as? Bool ?? true
 
         hotkey.selectedHotkey = dictationHotkey
         hotkey.onBegin = { [weak self] in
@@ -533,7 +540,8 @@ final class AppModel: ObservableObject {
                     vocabulary: customVocabulary + contextualVocabularyTerms(),
                     learnedCorrections: applicableLearnedCorrections(
                         forBundleIdentifier: lastExternalBundleIdentifier
-                    )
+                    ),
+                    framesEmail: emailFramingEnabled
                 )
             }
             let modeUsesGenerativePolish = selectedMode != .general
@@ -899,8 +907,9 @@ final class AppModel: ObservableObject {
         guard mode == .email else { return customInstruction }
         return """
         \(customInstruction)
-        Actively improve casual or awkward phrasing in the main body. Do not merely return it unchanged when a clearer professional version is possible.
-        Never add a greeting, recipient, subject line, signature, or sign-off.
+        Actively improve casual or awkward phrasing in the main body. Do not merely return it unchanged when a clearer version is possible.
+        A greeting line and a sign-off line may already be present. Reproduce those lines verbatim, on their own lines, and polish only the body between them.
+        Never add a recipient name, a subject line, or a second greeting or sign-off.
         """
     }
 
@@ -1062,6 +1071,7 @@ final class AppModel: ObservableObject {
         excludedContextApps = []
         acknowledgedCloudHost = ""
         clipboardFallbackEnabled = true
+        emailFramingEnabled = true
         activeContext = .empty
         lastContextSummary = "No context captured"
         partialTranscript = ""

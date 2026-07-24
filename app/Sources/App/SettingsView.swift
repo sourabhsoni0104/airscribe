@@ -428,6 +428,14 @@ private struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Email mode") {
+                Toggle("Add a greeting and sign-off", isOn: $model.emailFramingEnabled)
+                Text(model.emailFramingEnabled
+                     ? "A casual message gets “Hi,” and “Regards,”. A formal one gets “Dear Sir/Madam,” and “Thanking you, Yours sincerely,”. Whatever you dictate yourself is left as it is, and no recipient name is ever invented."
+                     : "Only the body you dictate is written. Add your own greeting and sign-off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("When insertion is not possible") {
                 Toggle("Copy to the clipboard instead", isOn: $model.clipboardFallbackEnabled)
                 Text(model.clipboardFallbackEnabled

@@ -29,29 +29,54 @@ Apple Intelligence is optional. If you have it turned on, AirScribe can use it f
 
 ## Installing
 
-If the [Releases page](https://github.com/sourabhsoni0104/airscribe/releases) doesn't have a build yet, skip to [Building it yourself](#building-it-yourself).
+> Current builds are **not signed or notarized**, because that needs a paid Apple Developer account. The app is fine, but macOS has no way to confirm who built it, so it needs one extra step to open. See [Installing an unsigned build](#installing-an-unsigned-build).
 
-1. Download `AirScribe-1.0.0.dmg`.
-2. Open it. A window appears with AirScribe on the left and your Applications folder on the right.
-3. Drag AirScribe onto Applications.
-4. Eject the disk image and launch AirScribe from Applications or Spotlight.
-
-Released builds are signed with a Developer ID and notarized by Apple, so they open without any warnings. The app is about 43 MB. It contains no speech models; those get downloaded later, onto your machine, and you can delete them whenever you like.
-
-If macOS says it cannot verify the app is free of malware, you have an unsigned build. Since macOS 15, right-clicking and choosing Open no longer gets past this. Either open System Settings, go to Privacy & Security, scroll to the message about AirScribe and click Open Anyway, or clear the quarantine flag from the Terminal:
+### With Homebrew
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/AirScribe.app
+brew install --cask --no-quarantine https://raw.githubusercontent.com/sourabhsoni0104/airscribe/main/Casks/airscribe.rb
 ```
 
-To check a download before you trust it:
+`--no-quarantine` is what keeps macOS from blocking an unsigned app, so don't leave it off. Later:
+
+```sh
+brew upgrade --cask airscribe
+brew uninstall --cask airscribe          # leaves your transcripts and settings alone
+brew uninstall --zap --cask airscribe    # also removes data, models, and settings
+```
+
+### From the disk image
+
+1. Download `AirScribe-1.0.0.dmg` from the [Releases page](https://github.com/sourabhsoni0104/airscribe/releases).
+2. Open it. A window appears with AirScribe on the left and your Applications folder on the right.
+3. Drag AirScribe onto Applications.
+4. Eject the disk image, then follow the unsigned-build step below before launching.
+
+The app is about 43 MB. It contains no speech models; those get downloaded later, onto your machine, and you can delete them whenever you like.
+
+### Installing an unsigned build
+
+macOS will say it cannot verify the app is free of malware. Pick whichever of these suits you:
+
+1. Install with Homebrew and `--no-quarantine`, as above. Nothing else to do.
+2. Clear the quarantine flag yourself, then open the app normally:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/AirScribe.app
+   ```
+
+3. Try to open it, let macOS refuse, then go to System Settings, Privacy & Security, scroll down to the message about AirScribe, and click Open Anyway. Right-clicking and choosing Open stopped working for this in macOS 15, so don't bother with that.
+
+One thing to know before you settle on an unsigned build: macOS ties Accessibility permission to an app's signing identity, and AirScribe needs Accessibility for its hotkey and for typing into other apps. Without a stable identity that permission can be dropped when the app updates, and you would grant it again in System Settings. Nothing breaks for good, but signed builds don't have this problem.
+
+If you would rather avoid all of it, build from source. Apps you compile yourself are never quarantined.
+
+Once builds are signed, you'll be able to check one before trusting it:
 
 ```sh
 codesign --verify --strict --verbose=2 /Applications/AirScribe.app
 spctl --assess --type execute --verbose=2 /Applications/AirScribe.app
 ```
-
-Both should come back accepted, with a valid Developer ID signature.
 
 ## First launch
 
@@ -82,7 +107,7 @@ Click the notch panel to pick a writing mode, or set up per-app rules and let Ai
 
 | Mode | What you get |
 |---|---|
-| Email | Tightened, professional prose. It won't invent a greeting, subject line, or sign-off. |
+| Email | Tightened prose, wrapped in a greeting and sign-off that match how the message reads. |
 | Chat | Short and conversational. |
 | Post | Clear prose suitable for posting. |
 | General | Cleanup only, no rewriting. |
@@ -108,6 +133,15 @@ Say "at symbol" and you get `@`. Same for question marks, full stops, and the re
 Homophones get sorted out from context: ones and once, there and their and they're, your and you're, its and it's, to and too. Direct speech picks up quotation marks on its own.
 
 If you restart a phrase halfway through and leave an article stranded, as in "the it shouldn't be hardcoded", the leftover word is dropped so the sentence reads properly.
+
+**Email mode writes the wrapper for you.** Dictating an email gives you the body, and adding the greeting and sign-off by hand afterwards is the tedious part. AirScribe reads how the message sounds and matches it:
+
+| Your message sounds | You get |
+|---|---|
+| Casual: "quick question, can we meet today" | "Hi," at the top, "Regards," at the bottom |
+| Formal: "kindly review the attached proposal at your earliest convenience" | "Dear Sir/Madam," at the top, "Thanking you," and "Yours sincerely," at the bottom |
+
+If you dictate your own greeting or sign-off, that is left exactly as you said it, and only the missing half is added. No recipient name is ever invented, since AirScribe has no way of knowing it. When the register is unclear the casual wrapper is used, because "Hi" reads fine in a formal thread while "Dear Sir/Madam" on a quick note to a colleague does not. Turn the whole thing off under Settings, General, Email mode.
 
 If Apple Intelligence is available you can turn on a deeper rewriting pass, still on-device. You choose whether AirScribe inserts immediately and quietly replaces the text once polish finishes, or waits and inserts the finished version once.
 
