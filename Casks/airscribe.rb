@@ -12,9 +12,9 @@ cask "airscribe" do
   # The app targets macOS 26 and Apple silicon. Builds are also not yet signed
   # with a Developer ID, so macOS refuses to open one unless it was installed
   # with --no-quarantine.
-  # A bare `:tahoe` would mean exactly macOS 26 and would stop matching once
-  # macOS 27 ships. This is a minimum requirement, so the comparison stays.
-  depends_on macos: ">= :tahoe" # rubocop:disable Homebrew/OSDependsOn
+  # Homebrew reads a bare version symbol as a minimum, so this is macOS 26 or
+  # newer. The string comparison form is deprecated.
+  depends_on macos: :tahoe
   depends_on arch: :arm64
 
   app "AirScribe.app"

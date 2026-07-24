@@ -34,7 +34,8 @@ Apple Intelligence is optional. If you have it turned on, AirScribe can use it f
 ### With Homebrew
 
 ```sh
-brew install --cask --no-quarantine https://raw.githubusercontent.com/sourabhsoni0104/airscribe/main/Casks/airscribe.rb
+brew tap sourabhsoni0104/airscribe https://github.com/sourabhsoni0104/airscribe
+brew install --cask --no-quarantine sourabhsoni0104/airscribe/airscribe
 ```
 
 `--no-quarantine` is what keeps macOS from blocking an unsigned app, so don't leave it off. Later:
