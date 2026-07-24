@@ -10,7 +10,11 @@ import Foundation
 /// send it.
 enum FeedbackComposer {
     /// Change this to redirect feedback.
-    static let recipient = "motivatedguy8@gmail.com"
+    ///
+    /// This opens a draft in the sender's own mail client rather than delivering
+    /// anything itself, so a reply only arrives if they choose to send it. That is
+    /// the trade for AirScribe transmitting nothing on its own.
+    static let recipient = "sourabhsoni0104@icloud.com"
 
     static func compose(modelState: String, engine: String?) {
         let subject = "AirScribe feedback (\(appVersion))"
